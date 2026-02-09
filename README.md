@@ -100,13 +100,15 @@ FIRST‑TIME USAGE GUIDE
 You’ll see server status, CPU/RAM/Players, uptime, restart countdown.
 
 2. Configure REST API settings in PalWorldSettings.ini:
+
 [ServerSettings]
 RESTAPIEnabled=True
 RESTAPIPort=8212
 RESTAPIKey=YOUR_KEY_HERE
 AdminPassword=YOUR_ADMIN_PASSWORD
 
-3. Start the server from the Server tab.
+3. Start the server from the Server tab. - dont forget to set arguments before launch!
+
 The manager will launch the server, detect the process, begin monitoring, and start the 6‑hour restart cycle.
 
 4. Verify monitoring in the Monitoring tab.
@@ -118,9 +120,13 @@ The manager will launch the server, detect the process, begin monitoring, and st
 AUTO‑RESTART SYSTEM
 
 - Countdown synced to REST uptime
+
 - Yellow warning ≤10 minutes
+
 - Red warning ≤1 minute
+
 - Automatic announcements at major intervals
+
 - Countdown stops at 30 seconds so Palworld’s built‑in shutdown banner takes over
 
 ---
@@ -128,11 +134,13 @@ AUTO‑RESTART SYSTEM
 TROUBLESHOOTING
 
 Monitoring not updating: Check REST API settings and firewall.
+
 Server not starting: Ensure manager is in the same folder as PalServer.exe.
+
 Announcements not appearing: Verify AdminPassword and RESTAPIKey.
 
 ---
 
 CREDITS
-Created by DarkJesus
-Built with help from Microsoft Copilot
+Created by DarkJesusmn
+Built with help from Microsoft Copilot and Claude AI and Chat GPT
