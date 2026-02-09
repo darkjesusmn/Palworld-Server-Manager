@@ -1,4 +1,6 @@
-Palworld Server Manager
+#Palworld Server Manager
+
+
 A fully‑featured, real‑time management dashboard for Palworld Dedicated Servers.
 Designed for Windows PowerShell with a modern GUI, live monitoring, automated restarts, in‑game announcements, backups, configuration editing, and more.
 
