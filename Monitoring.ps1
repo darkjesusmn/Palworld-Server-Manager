@@ -29,6 +29,11 @@ $script:lastCpuTime   = $null
 $script:freezeCounter = 0 
 $script:freezeThreshold = 3 # seconds of FPS=0 before popup
 
+# Auto‑Restart Timer Logic
+$script:autoRestartEnabled = $false
+$script:autoRestartTimer = $null
+$script:autoRestartInterval = 6 * 60 * 60 * 1000   # 6 hours in ms
+
 # ==========================================================================================
 # FUNCTION: Initialize-Monitoring
 # ==========================================================================================
@@ -39,38 +44,61 @@ function Initialize-Monitoring {
     if (-not $script:monitoringTimer) {
         $script:monitoringTimer = New-Object System.Windows.Forms.Timer
         $script:monitoringTimer.Interval = $script:monitoringInterval
-        $script:monitoringTimer.Add_Tick({ Update-MetricsREST })
-        $script:monitoringTimer.Start()
+        $script:monitoringTimer.Add_Tick({
+            if ($script:serverRunning) {
+                Update-MetricsREST
+            }
+        })
     }
 }
 
+
 # ==========================================================================================
-# FUNCTION: Update-MetricsREST
+# FUNCTION: Update-MetricsREST (FULLY MERGED VERSION)
 # ==========================================================================================
 
 function Update-MetricsREST {
+
+    if ($script:disableMonitoring -eq $true) { return }
+    if (-not $script:uiReady) { return }
+    if (-not $script:serverRunning) { return }
+
     $rest  = Get-ServerMetricsREST
     $local = Get-LocalSystemMetrics
 
     # ============================================================
-    # UPDATE MONITORING TAB LABELS
+    # UPDATE CHART TITLES (COMPACT LAYOUT)
     # ============================================================
-    if ($rest) {
-        $script:monitoringLabels.Players.Text = "Players: $($rest.Players)"
-        $script:monitoringLabels.FPS.Text     = "FPS: $($rest.FPS)"
-        $script:monitoringLabels.Uptime.Text  = "Uptime: $($rest.Uptime)"
+
+    if ($rest -and $local) {
+
+        # CPU chart title
+        $script:cpuChart.Titles[0].Text = (
+            "CPU: {0}%   |   Threads: {1}   |   Handles: {2}" -f `
+            $local.CPU, $local.Threads, $local.Handles
+        )
+
+        # RAM chart title
+        $script:ramChart.Titles[0].Text = (
+            "RAM: {0} MB   |   Peak: {1} MB" -f `
+            $local.RAM, $local.PeakRAM
+        )
+
+        # FPS chart title
+        $script:fpsChart.Titles[0].Text = (
+            "FPS: {0}" -f $rest.FPS
+        )
+
+        # Players chart title
+        $script:playerChart.Titles[0].Text = (
+            "Players: {0}" -f $rest.Players
+        )
     }
 
-    if ($local) {
-        $script:monitoringLabels.CpuAvg.Text  = "CPU: $($local.CPU)%"
-        $script:monitoringLabels.RamAvg.Text  = "RAM: $($local.RAM) MB"
-        $script:monitoringLabels.RamPeak.Text = "Peak RAM: $($local.PeakRAM) MB"
-        $script:monitoringLabels.CpuPeak.Text = "Threads: $($local.Threads) | Handles: $($local.Handles)"
-    }
+    # ============================================================
+    # UPDATE TOP UI (MAIN DASHBOARD)
+    # ============================================================
 
-    # ============================================================
-    # UPDATE TOP UI (MAIN DASHBOARD) — USING YOUR REAL VARIABLES
-    # ============================================================
     if ($local) {
         $script:cpuLabel.Text = "CPU: $($local.CPU)%"
         $script:ramLabel.Text = "RAM: $($local.RAM) MB"
@@ -82,107 +110,112 @@ function Update-MetricsREST {
     }
 
     # ============================================================
-    # COLOR CODING (CPU / RAM / FPS) — MONITORING TAB
+    # UPDATE CHART DATA
     # ============================================================
 
-    # CPU color thresholds
-    if ($local.CPU -ge 85) {
-        $script:monitoringLabels.CpuAvg.ForeColor = 'Red'
-    }
-    elseif ($local.CPU -ge 60) {
-        $script:monitoringLabels.CpuAvg.ForeColor = 'Orange'
-    }
-    else {
-        $script:monitoringLabels.CpuAvg.ForeColor = 'LimeGreen'
+    if ($local) {
+        $script:cpuChart.Series["CPU"].Points.AddY($local.CPU)
+        $script:ramChart.Series["RAM"].Points.AddY($local.RAM)
     }
 
-    # RAM color thresholds
-    if ($local.RAM -ge 6000) {
-        $script:monitoringLabels.RamAvg.ForeColor = 'Red'
-    }
-    elseif ($local.RAM -ge 4000) {
-        $script:monitoringLabels.RamAvg.ForeColor = 'Orange'
-    }
-    else {
-        $script:monitoringLabels.RamAvg.ForeColor = 'LimeGreen'
+    if ($rest) {
+        $script:fpsChart.Series["FPS"].Points.AddY($rest.FPS)
+        $script:playerChart.Series["Players"].Points.AddY($rest.Players)
     }
 
-    # FPS color thresholds
-    if ($rest.FPS -le 20) {
-        $script:monitoringLabels.FPS.ForeColor = 'Red'
-    }
-    elseif ($rest.FPS -le 40) {
-        $script:monitoringLabels.FPS.ForeColor = 'Orange'
-    }
-    else {
-        $script:monitoringLabels.FPS.ForeColor = 'LimeGreen'
-    }
-
-    # ============================================================
-    # COLOR CODING — TOP UI (USING YOUR REAL VARIABLES)
-    # ============================================================
-
-    # CPU color
-    if ($local.CPU -ge 85) {
-        $script:cpuLabel.ForeColor = 'Red'
-    }
-    elseif ($local.CPU -ge 60) {
-        $script:cpuLabel.ForeColor = 'Orange'
-    }
-    else {
-        $script:cpuLabel.ForeColor = 'LimeGreen'
-    }
-
-    # RAM color
-    if ($local.RAM -ge 6000) {
-        $script:ramLabel.ForeColor = 'Red'
-    }
-    elseif ($local.RAM -ge 4000) {
-        $script:ramLabel.ForeColor = 'Orange'
-    }
-    else {
-        $script:ramLabel.ForeColor = 'LimeGreen'
-    }
-
-    # ============================================================
-    # FREEZE DETECTION (FPS = 0)
-    # ============================================================
-
-    if ($rest.FPS -eq 0) {
-        $script:freezeCounter++
-    }
-    else {
-        $script:freezeCounter = 0
-    }
-
-    if ($script:freezeCounter -ge $script:freezeThreshold) {
-        $script:freezeCounter = 0
-
-        $result = [System.Windows.Forms.MessageBox]::Show(
-            "Server FPS has been 0 for $script:freezeThreshold seconds. Restart server?",
-            "Freeze Detected",
-            [System.Windows.Forms.MessageBoxButtons]::YesNo,
-            [System.Windows.Forms.MessageBoxIcon]::Warning
-        )
-
-        if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
-            Restart-Server
+    # Trim chart history to last 60 points
+    foreach ($chart in @($script:cpuChart, $script:ramChart, $script:fpsChart, $script:playerChart)) {
+        foreach ($series in $chart.Series) {
+            if ($series.Points.Count -gt 60) {
+                $series.Points.RemoveAt(0)
+            }
         }
     }
 
     # ============================================================
-    # CHART UPDATES
+    # AUTO-RESTART COUNTDOWN (Option B: Sync to REST uptime)
     # ============================================================
-    Add-ChartPoint $script:cpuChart    $local.CPU
-    Add-ChartPoint $script:ramChart    $local.RAM
-    Add-ChartPoint $script:playerChart $rest.Players
-    Add-ChartPoint $script:fpsChart    $rest.FPS
 
-    # ============================================================
-    # HEALTH (must be last)
-    # ============================================================
-    Update-HealthStatus -CPU $local.CPU -RAM $local.RAM -FPS $rest.FPS
+    if ($script:nextRestartLabel -ne $null) {
+
+        if ($script:autoRestartEnabled -and $rest) {
+
+            # REST uptime in seconds
+            $uptimeSeconds = [int]$rest.Uptime
+
+            # 6 hours in seconds
+            $totalSeconds = 6 * 3600
+
+            # Remaining time based on REST uptime
+            $remainingSeconds = $totalSeconds - $uptimeSeconds
+
+            # ====================================================
+            # IN-GAME COUNTDOWN ANNOUNCEMENTS
+            # ====================================================
+
+            # Milestone warnings (1h, 30m, 15m, 10m, 9m...1m)
+            foreach ($key in $script:restartWarningsSent.Keys) {
+
+                $threshold = [int]$key
+
+                if ($remainingSeconds -le $threshold -and -not $script:restartWarningsSent[$key]) {
+
+                    $minutes = [int]($threshold / 60)
+
+                    if ($minutes -ge 1) {
+                        Send-RestartWarning "$minutes minute(s) until server restart!"
+                    }
+
+                    $script:restartWarningsSent[$key] = $true
+                }
+            }
+
+            # Final 60-second countdown (every second)
+            if ($remainingSeconds -le 60) {
+
+            }
+
+            # ====================================================
+            # HANDLE RESTART TRIGGER
+            # ====================================================
+
+            if ($remainingSeconds -le 30) {
+
+                $script:nextRestartLabel.Text = "Next Restart: NOW"
+
+                Restart-Server
+
+                # Reset next restart time (real system time)
+                $script:nextRestartTime = (Get-Date).AddHours(6)
+                return
+            }
+
+            # ====================================================
+            # COLOR-CODED COUNTDOWN + NORMALIZED TIMESPAN
+            # ====================================================
+
+            $ts = [TimeSpan]::FromSeconds($remainingSeconds)
+
+            if ($remainingSeconds -le 60) {
+                $script:nextRestartLabel.ForeColor = [System.Drawing.Color]::Red
+            }
+            elseif ($remainingSeconds -le 600) {
+                $script:nextRestartLabel.ForeColor = [System.Drawing.Color]::Yellow
+            }
+            else {
+                $script:nextRestartLabel.ForeColor = $colorText
+            }
+
+            $script:nextRestartLabel.Text =
+                "Next Restart: {0:00}:{1:00}:{2:00}" -f `
+                $ts.Hours, $ts.Minutes, $ts.Seconds
+        }
+        else {
+            $script:nextRestartLabel.Text = "Next Restart: --"
+        }
+    }
 }
+
 
 
 # =======================================================================================
@@ -198,6 +231,7 @@ function Update-HealthStatus {
     # If any metric is missing, show placeholder
     if ($CPU -eq $null -or $RAM -eq $null -or $FPS -eq $null) {
         $script:monitoringLabels.Health.Text = "Health: --"
+        $script:monitoringLabels.Health.ForeColor = 'Gray'
         return
     }
 
@@ -209,7 +243,7 @@ function Update-HealthStatus {
     elseif ($CPU -gt 70) { $score -= 25 }
     elseif ($CPU -gt 50) { $score -= 10 }
 
-    # RAM impact (adjust thresholds to your server size)
+    # RAM impact
     if ($RAM -gt 6500) { $score -= 40 }
     elseif ($RAM -gt 5000) { $score -= 25 }
     elseif ($RAM -gt 3500) { $score -= 10 }
@@ -229,47 +263,43 @@ function Update-HealthStatus {
         $status = "Critical"
     }
 
+    # Update label text
     $script:monitoringLabels.Health.Text = "Health: $status"
+
+    # Update label color
+    switch ($status) {
+        "Good"     { $script:monitoringLabels.Health.ForeColor = 'Green' }
+        "Moderate" { $script:monitoringLabels.Health.ForeColor = 'Yellow' }
+        "Critical" { $script:monitoringLabels.Health.ForeColor = 'Red' }
+    }
 }
 
-
 #===========================================================================================
-# FUNCTION: Get-Palworldprocess locator
+# FUNCTION: Get-PalworldProcess locator (multi-process aware)
 #===========================================================================================   
 function Get-PalworldProcess {
-    if ($script:palworldProcess -and !$script:palworldProcess.HasExited) {
-        return $script:palworldProcess
-    }
-
-    # Try all known Palworld server names
+    # All possible Palworld server-related processes
     $names = @(
-        "Palworld-Win64-Shipping",   # <-- THIS is the real dedicated server
-        "Pal",                       # sometimes appears as "Pal.exe"
-        "PalServer-Win64-Test-Cmd",
-        "PalServer",
-        "PalServer-Win64-Shipping"
+        "PalServer-Win64-Shipping-Cmd",
+        "PalServer"
     )
 
-    foreach ($name in $names) {
-        $proc = Get-Process -Name $name -ErrorAction SilentlyContinue
-        if ($proc) {
-            $script:palworldProcess = $proc
-            return $proc
-        }
+    # Get ALL matching processes
+    $procs = Get-Process -Name $names -ErrorAction SilentlyContinue
+
+    if ($procs.Count -eq 0) {
+        return $null
     }
 
-    return $null
+    return $procs   # return ARRAY
 }
 
-
-
-
 #===========================================================================================
-# FUNCTION: Get-LocalSystemMetrics
+# FUNCTION: Get-LocalSystemMetrics (sum across all Palworld processes)
 #===========================================================================================
 function Get-LocalSystemMetrics {
-    $proc = Get-PalworldProcess
-    if (-not $proc) {
+    $procs = Get-PalworldProcess
+    if (-not $procs) {
         return @{
             CPU     = $null
             RAM     = $null
@@ -279,13 +309,27 @@ function Get-LocalSystemMetrics {
         }
     }
 
+    # SUM CPU + RAM across ALL processes
+    $totalCpuTime = 0
+    $totalRam     = 0
+    $totalPeakRam = 0
+    $totalThreads = 0
+    $totalHandles = 0
+
+    foreach ($p in $procs) {
+        $totalCpuTime += $p.TotalProcessorTime.TotalMilliseconds
+        $totalRam     += $p.WorkingSet64
+        $totalPeakRam += $p.PeakWorkingSet64
+        $totalThreads += $p.Threads.Count
+        $totalHandles += $p.Handles
+    }
+
     # CPU %
     $now = Get-Date
-    $cpuTime = $proc.TotalProcessorTime.TotalMilliseconds
 
     if ($script:lastCpuSample -and $script:lastCpuTime) {
         $deltaTime = ($now - $script:lastCpuSample).TotalMilliseconds
-        $deltaCpu  = $cpuTime - $script:lastCpuTime
+        $deltaCpu  = $totalCpuTime - $script:lastCpuTime
 
         # Raw CPU percent across all cores
         $cpuPercent = ($deltaCpu / $deltaTime) * 100
@@ -294,7 +338,8 @@ function Get-LocalSystemMetrics {
         $logicalCores = (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
         if ($logicalCores -gt 0) {
             $cpuPercent = [Math]::Round($cpuPercent / $logicalCores, 1)
-        } else {
+        }
+        else {
             $cpuPercent = 0
         }
     }
@@ -304,25 +349,20 @@ function Get-LocalSystemMetrics {
 
     # Update CPU sample history
     $script:lastCpuSample = $now
-    $script:lastCpuTime   = $cpuTime
+    $script:lastCpuTime   = $totalCpuTime
 
     # RAM MB
-    $ramMB = [Math]::Round($proc.WorkingSet64 / 1MB, 0)
-
-    # Peak RAM MB
-    $peakMB = [Math]::Round($proc.PeakWorkingSet64 / 1MB, 0)
+    $ramMB  = [Math]::Round($totalRam / 1MB, 0)
+    $peakMB = [Math]::Round($totalPeakRam / 1MB, 0)
 
     return @{
         CPU     = $cpuPercent
         RAM     = $ramMB
-        Threads = $proc.Threads.Count
-        Handles = $proc.Handles
+        Threads = $totalThreads
+        Handles = $totalHandles
         PeakRAM = $peakMB
     }
 }
-
-
-
 
 # ==========================================================================================
 # FUNCTION: Get-CurrentRESTMetrics
@@ -439,6 +479,73 @@ function Add-ChartPoint {
     # Limit history to 60 points (1 minute at 1-second refresh)
     if ($chart.Series[0].Points.Count -gt 60) {
         $chart.Series[0].Points.RemoveAt(0)
+    }
+}
+
+# ==========================================================================================
+# FUNCTION: Reset-MonitoringUI
+# ==========================================================================================
+function Reset-MonitoringUI {
+
+    # === RESET TOP BAR LABELS ======================================================
+    if ($script:cpuLabel)         { $script:cpuLabel.Text         = "CPU: --" }
+    if ($script:ramLabel)         { $script:ramLabel.Text         = "RAM: --" }
+    if ($script:playerCountLabel) { $script:playerCountLabel.Text = "Players: --" }
+    if ($script:uptimeLabel)      { $script:uptimeLabel.Text      = "Uptime: --" }
+
+    # === RESET CHART TITLES (COMPACT LAYOUT) ======================================
+    if ($script:cpuChart) {
+        $script:cpuChart.Titles[0].Text = "CPU: --   |   Threads: --   |   Handles: --"
+    }
+
+    if ($script:ramChart) {
+        $script:ramChart.Titles[0].Text = "RAM: --   |   Peak: --"
+    }
+
+    if ($script:fpsChart) {
+        $script:fpsChart.Titles[0].Text = "FPS: --"
+    }
+
+    if ($script:playerChart) {
+        $script:playerChart.Titles[0].Text = "Players: --"
+    }
+
+    # === CLEAR CHART DATA ==========================================================
+    if ($script:cpuChart)    { $script:cpuChart.Series["CPU"].Points.Clear() }
+    if ($script:ramChart)    { $script:ramChart.Series["RAM"].Points.Clear() }
+    if ($script:fpsChart)    { $script:fpsChart.Series["FPS"].Points.Clear() }
+    if ($script:playerChart) { $script:playerChart.Series["Players"].Points.Clear() }
+
+    # === RESET DATA ARRAYS (IF USED) ===============================================
+    $script:cpuData    = @()
+    $script:ramData    = @()
+    $script:fpsData    = @()
+    $script:playerData = @()
+
+    # === OPTIONAL: RESET NEXT RESTART LABEL ========================================
+    if ($script:nextRestartLabel) {
+        $script:nextRestartLabel.Text = "Next Restart: --"
+    }
+}
+
+
+
+# ==========================================================================================
+# FUNCTION: Initialize-AutoRestart
+# ==========================================================================================
+function Initialize-AutoRestart {
+
+    # Enable auto‑restart by default
+    $script:autoRestartEnabled = $true
+
+    if (-not $script:autoRestartTimer) {
+        $script:autoRestartTimer = New-Object System.Windows.Forms.Timer
+        $script:autoRestartTimer.Interval = $script:autoRestartInterval
+        $script:autoRestartTimer.Add_Tick({
+            if ($script:autoRestartEnabled -and $script:serverRunning) {
+                Restart-Server
+            }
+        })
     }
 }
 

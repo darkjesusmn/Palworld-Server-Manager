@@ -59,6 +59,30 @@ function Set-LogOutputBox {
 }
 
 # ==========================================================================================
+# Append-ServerConsole
+# ==========================================================================================
+function Append-ServerConsole {
+    param([string]$text)
+
+    if (-not $script:serverLogsBox) { return }
+
+    if ($script:serverLogsBox.InvokeRequired) {
+        $script:serverLogsBox.Invoke([Action]{
+            $script:serverLogsBox.AppendText("$text`r`n")
+            $script:serverLogsBox.SelectionStart = $script:serverLogsBox.Text.Length
+            $script:serverLogsBox.ScrollToCaret()
+        })
+    }
+    else {
+        $script:serverLogsBox.AppendText("$text`r`n")
+        $script:serverLogsBox.SelectionStart = $script:serverLogsBox.Text.Length
+        $script:serverLogsBox.ScrollToCaret()
+    }
+}
+
+
+
+# ==========================================================================================
 # Build-StartupArguments
 # ==========================================================================================
 function Build-StartupArguments {
@@ -100,15 +124,14 @@ function Start-Server {
     try {
         $script:serverStarting = $true
 
+        # --- PROCESS STARTUP -------------------------------------------------------
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $script:serverExePath
         $psi.WorkingDirectory = $script:serverRoot
         $psi.UseShellExecute = $false
         $psi.CreateNoWindow = $true
-        
-        # Redirect STDOUT and STDERR to capture console output
         $psi.RedirectStandardOutput = $true
-        $psi.RedirectStandardError = $true
+        $psi.RedirectStandardError  = $true
 
         if ($script:startupArguments) {
             $psi.Arguments = $script:startupArguments
@@ -120,16 +143,16 @@ function Start-Server {
             throw "Process returned null"
         }
 
-        # Start async readers for STDOUT and STDERR
         $script:serverProcess.BeginOutputReadLine() | Out-Null
-        $script:serverProcess.BeginErrorReadLine() | Out-Null
+        $script:serverProcess.BeginErrorReadLine()  | Out-Null
 
-        $script:serverRunning  = $true
-        $script:serverStarting = $false
+        # --- STATE FLAGS -----------------------------------------------------------
+        $script:serverRunning   = $true
+        $script:serverStarting  = $false
         $script:serverStartTime = Get-Date
-        $script:lastCrashTime = $null
+        $script:lastCrashTime   = $null
 
-        # Start crash detection
+        # --- CRASH DETECTION TIMER -------------------------------------------------
         if (-not $script:crashDetectionTimer) {
             $script:crashDetectionTimer = New-Object System.Windows.Forms.Timer
             $script:crashDetectionTimer.Interval = 5000
@@ -137,26 +160,59 @@ function Start-Server {
         }
         $script:crashDetectionTimer.Start()
 
-        # Start API verification timer (20 seconds after server starts)
+        # --- LOG OUTPUT ROUTING ----------------------------------------------------
+        Set-LogOutputBox $serverConsoleTextBox
+
+        # --- API VERIFICATION TIMER ------------------------------------------------
         if (-not $script:apiVerificationTimer) {
             $script:apiVerificationTimer = New-Object System.Windows.Forms.Timer
-            $script:apiVerificationTimer.Interval = 20000  # 20 seconds
+            $script:apiVerificationTimer.Interval = 20000
             $script:apiVerificationTimer.Add_Tick({
                 Write-Host "`n=== Verifying REST API Connection (20s after start) ===" -ForegroundColor Cyan
                 if (Get-Command Update-RestAPISettings -ErrorAction SilentlyContinue) {
                     Update-RestAPISettings
                 }
-                # Only run once, then stop
                 $script:apiVerificationTimer.Stop()
             })
-            $script:apiVerificationTimer.Start()
+        }
+        $script:apiVerificationTimer.Start()
+
+        # --- CALLBACK --------------------------------------------------------------
+        if ($script:onServerStarted) { & $script:onServerStarted }
+
+        # --- AUTO-RESTART TIMER ----------------------------------------------------
+        if ($script:autoRestartTimer) { $script:autoRestartTimer.Start() }
+
+        # --- RESET NEXT RESTART COUNTDOWN ------------------------------------------
+        if ($script:autoRestartEnabled) {
+            $script:nextRestartTime = (Get-Date).AddHours(6)
+
+            if ($script:nextRestartLabel) {
+                $script:nextRestartLabel.Text = "Next Restart: 06:00:00"
+            }
         }
 
-        # Restart log reader
-        Stop-OutputReader
-        Start-OutputReader
+        # --- RESTART MONITORING TIMER ----------------------------------------------
+        if ($script:monitoringTimer) {
+            $script:monitoringTimer.Start()
+        }
 
-        if ($script:onServerStarted) { & $script:onServerStarted }
+        # --- UI READY --------------------------------------------------------------
+        $script:uiReady = $true
+
+        # --- INITIALIZE COMPACT CHART TITLES ---------------------------------------
+        if ($script:cpuChart) {
+            $script:cpuChart.Titles[0].Text = "CPU: --   |   Threads: --   |   Handles: --"
+        }
+        if ($script:ramChart) {
+            $script:ramChart.Titles[0].Text = "RAM: --   |   Peak: --"
+        }
+        if ($script:fpsChart) {
+            $script:fpsChart.Titles[0].Text = "FPS: --"
+        }
+        if ($script:playerChart) {
+            $script:playerChart.Titles[0].Text = "Players: --"
+        }
 
         return $true
 
@@ -168,101 +224,9 @@ function Start-Server {
     }
 }
 
-# ==========================================================================================
-# Start-OutputReader
-# ==========================================================================================
-function Start-OutputReader {
 
-    if ($null -eq $script:serverLogsBox) { return }
 
-    $script:lastLogPosition = 0
-    $script:logFileFound = $false
 
-    $script:serverLogsBox.AppendText("[$(Get-Date -Format 'HH:mm:ss')] Log reader started`r`n")
-    $script:serverLogsBox.AppendText("[$(Get-Date -Format 'HH:mm:ss')] Searching logs in: $script:logDir`r`n")
-
-    $script:outputReaderTimer = New-Object System.Windows.Forms.Timer
-    $script:outputReaderTimer.Interval = 1000
-
-    $script:outputReaderTimer.Add_Tick({
-        try {
-            if (-not (Test-Path $script:logDir)) {
-                if (-not $script:logFileFound) {
-                    $script:serverLogsBox.AppendText("Log directory not found.`r`n")
-                    $script:logFileFound = $true
-                }
-                return
-            }
-
-            $logFiles = Get-ChildItem $script:logDir -Filter "*.log" -ErrorAction SilentlyContinue
-            if ($logFiles.Count -eq 0) {
-                if (-not $script:logFileFound) {
-                    $script:serverLogsBox.AppendText("No log files found.`r`n")
-                    $script:logFileFound = $true
-                }
-                return
-            }
-
-            $logFile = $logFiles | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-
-            if (-not $script:logFileFound) {
-                $script:serverLogsBox.AppendText("Using log file: $($logFile.Name)`r`n")
-                $script:logFileFound = $true
-            }
-
-            # Read new lines
-            $fs = [System.IO.File]::Open($logFile.FullName, 'Open', 'Read', 'ReadWrite')
-            $fs.Seek($script:lastLogPosition, 'Begin') | Out-Null
-
-            $reader = New-Object System.IO.StreamReader($fs)
-            $newLines = @()
-
-            while ($reader.Peek() -gt -1) {
-                $line = $reader.ReadLine()
-                if ($line) { $newLines += $line }
-            }
-
-            $script:lastLogPosition = $fs.Position
-
-            $reader.Dispose()
-            $fs.Dispose()
-
-            foreach ($line in $newLines) {
-                $script:serverLogsBox.AppendText("$line`r`n")
-            }
-
-            # Trim to last 500 lines
-            $lines = $script:serverLogsBox.Lines
-            if ($lines.Count -gt 500) {
-                $script:serverLogsBox.Lines = $lines[-400..-1]
-            }
-
-            $script:serverLogsBox.SelectionStart = $script:serverLogsBox.Text.Length
-            $script:serverLogsBox.ScrollToCaret()
-
-            if ($script:serverProcess -and $script:serverProcess.HasExited) {
-                $script:outputReaderTimer.Stop()
-                $script:serverLogsBox.AppendText("Server stopped.`r`n")
-            }
-
-        } catch {}
-    })
-
-    $script:outputReaderTimer.Start()
-}
-
-# ==========================================================================================
-# Stop-OutputReader
-# ==========================================================================================
-function Stop-OutputReader {
-    if ($script:outputReaderTimer) {
-        $script:outputReaderTimer.Stop()
-        $script:outputReaderTimer.Dispose()
-        $script:outputReaderTimer = $null
-    }
-    $script:lastLogPosition = 0
-    $script:logFileFound = $false
-}
 
 # ==========================================================================================
 # Stop-Server (Graceful Shutdown via API)
@@ -274,14 +238,12 @@ function Stop-Server {
     try {
         Write-Host "`n=== GRACEFUL SERVER SHUTDOWN ===" -ForegroundColor Yellow
         
-        # Use REST API for graceful shutdown with 30 second warning
         if (Get-Command Shutdown-ServerREST -ErrorAction SilentlyContinue) {
             Write-Host "Sending graceful shutdown via REST API (30 second warning)..." -ForegroundColor Cyan
             $shutdownResult = Shutdown-ServerREST -WaitTimeSeconds 30 -Message "Server shutting down in 30 seconds. Please save your progress."
             
             if ($shutdownResult) {
                 Write-Host "[OK] Shutdown command sent to server" -ForegroundColor Green
-                # Wait for server to shut down gracefully (up to 40 seconds for 30 second warning + buffer)
                 Write-Host "Waiting for server to shut down gracefully (up to 40 seconds)..." -ForegroundColor Cyan
                 $waitTime = 0
                 $maxWait = 40
@@ -301,13 +263,11 @@ function Stop-Server {
             Write-Warning "REST API not available, attempting process kill..."
         }
 
-        # Cleanup: Kill process if still running
         if ($script:serverProcess -and -not $script:serverProcess.HasExited) {
             Write-Host "Force killing server process..." -ForegroundColor Yellow
             try { $script:serverProcess.Kill() } catch {}
             try { Stop-Process -Id $script:serverProcess.Id -Force -ErrorAction SilentlyContinue } catch {}
-            
-            # Wait for process to actually exit (up to 5 seconds)
+
             $waitTime = 0
             while (-not $script:serverProcess.HasExited -and $waitTime -lt 5) {
                 Start-Sleep -Milliseconds 500
@@ -317,14 +277,18 @@ function Stop-Server {
 
         try { $script:serverProcess.Dispose() } catch {}
 
-        $script:serverProcess = $null
-        $script:serverRunning = $false
-        $script:serverStarting = $false
+        $script:serverProcess   = $null
+        $script:serverRunning   = $false
+        $script:serverStarting  = $false
         $script:serverStartTime = $null
 
-        if ($script:crashDetectionTimer) { $script:crashDetectionTimer.Stop() }
-        if ($script:apiVerificationTimer) { $script:apiVerificationTimer.Stop() }
-        Stop-OutputReader
+        if ($script:crashDetectionTimer)   { $script:crashDetectionTimer.Stop() }
+        if ($script:apiVerificationTimer)  { $script:apiVerificationTimer.Stop() }
+        if ($script:monitoringTimer)       { $script:monitoringTimer.Stop() }
+
+        if ($script:autoRestartTimer)      { $script:autoRestartTimer.Stop() }   # ← NEW LINE
+
+        Reset-MonitoringUI      
 
         Write-Host "=== SHUTDOWN COMPLETE ===" -ForegroundColor Green
         return $true
@@ -334,6 +298,9 @@ function Stop-Server {
         return $false
     }
 }
+
+
+
 
 # ==========================================================================================
 # Force-Kill-Server (Immediate shutdown via API, no warning)
@@ -391,7 +358,6 @@ function Force-Kill-Server {
 
         if ($script:crashDetectionTimer) { $script:crashDetectionTimer.Stop() }
         if ($script:apiVerificationTimer) { $script:apiVerificationTimer.Stop() }
-        Stop-OutputReader
 
         Write-Host "=== FORCE KILL COMPLETE ===" -ForegroundColor Red
         return $true
@@ -414,7 +380,6 @@ function Detect-ServerCrash {
             $script:serverStarting = $false
             $script:lastCrashTime = Get-Date
 
-            Stop-OutputReader
 
             if ($script:onServerCrash) { & $script:onServerCrash }
         }
@@ -449,6 +414,135 @@ function Get-ServerStatus {
     }
 }
 
+#=========================================================================================
+# Redirect-PowerShellOutput
+#=========================================================================================
+function Redirect-PowerShellOutput {
+
+    # Remove any existing overrides so ours take effect
+    Remove-Item function:Write-Host -ErrorAction SilentlyContinue
+    Remove-Item function:Write-Warning -ErrorAction SilentlyContinue
+    Remove-Item function:Write-Error -ErrorAction SilentlyContinue
+    Remove-Item function:Write-Verbose -ErrorAction SilentlyContinue
+    Remove-Item function:Write-Debug -ErrorAction SilentlyContinue
+    Remove-Item function:Write-Information -ErrorAction SilentlyContinue
+    Remove-Item function:Out-Default -ErrorAction SilentlyContinue
+
+    # Override Write-* functions (join all args)
+    Set-Item function:Write-Host -Value {
+        param([Parameter(ValueFromRemainingArguments = $true)] $Message)
+        $text = ($Message -join ' ')
+        Append-ServerConsole "[HOST] $text"
+    }
+
+    Set-Item function:Write-Warning -Value {
+        param([Parameter(ValueFromRemainingArguments = $true)] $Message)
+        $text = ($Message -join ' ')
+        Append-ServerConsole "[WARN] $text"
+    }
+
+    Set-Item function:Write-Error -Value {
+        param([Parameter(ValueFromRemainingArguments = $true)] $Message)
+        $text = ($Message -join ' ')
+        Append-ServerConsole "[ERROR] $text"
+    }
+
+    Set-Item function:Write-Verbose -Value {
+        param([Parameter(ValueFromRemainingArguments = $true)] $Message)
+        $text = ($Message -join ' ')
+        Append-ServerConsole "[VERBOSE] $text"
+    }
+
+    Set-Item function:Write-Debug -Value {
+        param([Parameter(ValueFromRemainingArguments = $true)] $Message)
+        $text = ($Message -join ' ')
+        Append-ServerConsole "[DEBUG] $text"
+    }
+
+    Set-Item function:Write-Information -Value {
+        param([Parameter(ValueFromRemainingArguments = $true)] $Message)
+        $text = ($Message -join ' ')
+        Append-ServerConsole "[INFO] $text"
+    }
+
+    # ⭐ GLOBAL OUTPUT INTERCEPTOR (captures EVERYTHING from ALL runspaces)
+    Set-Item function:Out-Default -Value {
+        param([Parameter(ValueFromRemainingArguments = $true)] $InputObject)
+        foreach ($line in $InputObject) {
+            Append-ServerConsole "[OUT] $line"
+        }
+    }
+
+    # Hook native PowerShell streams
+    $global:WarningPreference        = 'Continue'
+    $global:VerbosePreference        = 'Continue'
+    $global:DebugPreference          = 'Continue'
+    $global:InformationPreference    = 'Continue'
+    $global:ErrorActionPreference    = 'Continue'
+
+    # Capture ALL errors (native stream 2)
+    Register-EngineEvent PowerShell.OnError -Action {
+        $items = $Event.SourceArgs
+        if (-not $items -or $items.Count -eq 0) {
+            if ($global:Error.Count -gt 0) {
+                $msg = $global:Error[0].Exception.Message
+                Append-ServerConsole "[ERROR] $msg"
+            } else {
+                Append-ServerConsole "[ERROR] (no message)"
+            }
+            return
+        }
+
+        foreach ($item in $items) {
+            if ($item -is [System.Management.Automation.ErrorRecord]) {
+                Append-ServerConsole "[ERROR] $($item.Exception.Message)"
+            } elseif ($item) {
+                Append-ServerConsole "[ERROR] $item"
+            } else {
+                Append-ServerConsole "[ERROR] (no message)"
+            }
+        }
+    }
+
+    # Capture ALL warnings (native stream 3)
+    Register-EngineEvent PowerShell.OnWarning -Action {
+        $items = $Event.SourceArgs
+        if (-not $items -or $items.Count -eq 0) {
+            Append-ServerConsole "[WARN] (no message)"
+            return
+        }
+
+        foreach ($item in $items) {
+            Append-ServerConsole "[WARN] $item"
+        }
+    }
+
+    # Capture ALL information messages
+    Register-EngineEvent PowerShell.OnInformation -Action {
+        $items = $Event.SourceArgs
+        if (-not $items -or $items.Count -eq 0) {
+            Append-ServerConsole "[INFO] (no message)"
+            return
+        }
+
+        foreach ($item in $items) {
+            Append-ServerConsole "[INFO] $item"
+        }
+    }
+
+    # Capture CommandNotFound exceptions
+    $ExecutionContext.InvokeCommand.CommandNotFoundAction = {
+        param($commandName, $exception)
+        Append-ServerConsole "[ERROR] $($exception.Message)"
+    }
+}
+
+
+
+
+
+
+
 # ==========================================================================================
 # Cleanup-Core
 # ==========================================================================================
@@ -469,7 +563,6 @@ function Cleanup-Core {
         $script:apiVerificationTimer.Dispose()
     }
 
-    Stop-OutputReader
 
     if ($script:serverRunning -or $script:serverStarting) {
         Stop-Server | Out-Null

@@ -1,289 +1,158 @@
 # ==========================================================================================
-# Backups.ps1 - Backup and Restore Management (Improved)
+# Backups.ps1 - REST-based Save Management (Simplified & Safe)
 # ==========================================================================================
-# Handles: Manual/automatic backups, restore, backup rotation, compression
-# Dependencies: ConfigManager, RCON
+# New model:
+# - No filesystem world copying
+# - No world folder assumptions
+# - Uses REST API "save" endpoint only
+# - Optional auto-save timer
+# - Manual "Force Save" hook for UI
 # ==========================================================================================
 
 # ==========================================================================================
 # GLOBAL VARIABLES
 # ==========================================================================================
 
-# Dynamically detect world folder
-$saveRoot = Join-Path $script:serverRoot "Pal\Saved\SaveGames\0"
-$worldFolder = $null
-
-if (Test-Path $saveRoot) {
-    $worldFolder = Get-ChildItem $saveRoot -Directory | Select-Object -First 1
+# Auto-save every X minutes (used by UI + settings)
+if (-not $script:autoBackupInterval) {
+    $script:autoBackupInterval = 30  # minutes (default)
 }
-
-if ($null -eq $worldFolder) {
-    Write-Warning "No world folder detected. Backups may not function."
-    $script:backupBaseDir = $saveRoot
-} else {
-    $script:backupBaseDir = $worldFolder.FullName
-}
-
-# Backups stored OUTSIDE world folder
-$script:backupMetadataDir = Join-Path $script:serverRoot "backups"
 
 $script:autoBackupTimer = $null
-$script:autoBackupInterval = 15  # minutes
-$script:maxBackups = 10
-$script:lastBackupTime = $null
+$script:lastBackupTime  = $null
+
+# ==========================================================================================
+# HELPER: Invoke-WorldSaveREST
+# ==========================================================================================
+function Invoke-WorldSaveREST {
+    param(
+        [string]$Reason = "manual"
+    )
+
+    if (-not $script:serverRunning) {
+        Write-Warning "Cannot perform REST save: server is not running."
+        return $false
+    }
+
+    if (-not (Get-Command Invoke-RestAPIRequest-SafeRetry -ErrorAction SilentlyContinue)) {
+        Write-Warning "REST API module not available. Cannot perform REST save."
+        return $false
+    }
+
+    Write-Host "=== REST SAVE REQUEST ($Reason) ===" -ForegroundColor Cyan
+
+    try {
+        $body = @{ reason = $Reason }
+
+        $response = Invoke-RestAPIRequest-SafeRetry `
+            -Endpoint "save" `
+            -Method "POST" `
+            -Body $body `
+            -TimeoutSeconds $script:restApiTimeout `
+            -WaitForSeconds 10
+
+        if ($null -eq $response) {
+            Write-Warning "REST save request returned no response."
+            return $false
+        }
+
+        Write-Host "[OK] REST save completed ($Reason)" -ForegroundColor Green
+        $script:lastBackupTime = Get-Date
+        return $true
+
+    } catch {
+        Write-Warning "REST save failed: $($_.Exception.Message)"
+        return $false
+    }
+}
 
 # ==========================================================================================
 # Initialize-Backups
 # ==========================================================================================
-
 function Initialize-Backups {
-    Write-Verbose "Initializing Backups..."
+    Write-Verbose "Initializing REST-based backups..."
 
-    if (-not (Test-Path $script:backupMetadataDir)) {
-        New-Item -ItemType Directory -Path $script:backupMetadataDir | Out-Null
+    # Auto-save timer (optional)
+    if (-not $script:autoBackupTimer) {
+        $script:autoBackupTimer = New-Object System.Windows.Forms.Timer
+        $script:autoBackupTimer.Interval = [int]($script:autoBackupInterval * 60000)
+
+        $script:autoBackupTimer.Add_Tick({
+            if ($script:serverRunning) {
+                Invoke-WorldSaveREST -Reason "auto"
+            }
+        })
+
+        $script:autoBackupTimer.Start()
+        Write-Verbose "Auto-save timer started (every $($script:autoBackupInterval) minutes)."
     }
-
-    Load-BackupMetadata
-
-    # Start auto-backup timer
-    $script:autoBackupTimer = New-Object System.Windows.Forms.Timer
-    $script:autoBackupTimer.Interval = $script:autoBackupInterval * 60000
-    $script:autoBackupTimer.Add_Tick({ Perform-ManualBackup "auto" })
-    $script:autoBackupTimer.Start()
 }
 
 # ==========================================================================================
-# Perform-ManualBackup
+# Perform-ManualBackup  (now: REST "Force Save")
 # ==========================================================================================
-
 function Perform-ManualBackup {
     param([string]$description = "")
 
-    Write-Output "Creating manual backup..."
+    $reason = if ([string]::IsNullOrWhiteSpace($description)) { "manual" } else { $description }
+    Write-Host "Creating REST save ($reason)..." -ForegroundColor Cyan
 
-    try {
-        # Trigger RCON save if enabled
-        if ((Get-ConfigValue "RCONEnabled") -eq "True") {
-            try { Save-World | Out-Null } catch {}
-        }
-
-        Start-Sleep -Milliseconds 500
-
-        # Create backup folder
-        $timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
-        $safeDesc = ($description -replace '[^\w\-]', '')
-        $backupName = if ($safeDesc) { "backup_${timestamp}_$safeDesc" } else { "backup_$timestamp" }
-
-        $backupPath = Join-Path $script:backupMetadataDir $backupName
-        New-Item -ItemType Directory -Path $backupPath | Out-Null
-
-        # Validate world folder
-        $worldPath = Join-Path $script:backupBaseDir "world"
-        if (-not (Test-Path $worldPath)) {
-            Write-Error "World folder not found: $worldPath"
-            return $false
-        }
-
-        # Use robocopy for fast, safe copying
-        $dest = Join-Path $backupPath "world"
-        New-Item -ItemType Directory -Path $dest | Out-Null
-
-        robocopy $worldPath $dest /MIR /R:1 /W:1 | Out-Null
-
-        # Metadata
-        $metadata = @{
-            Timestamp = Get-Date
-            Description = $description
-            SizeMB = Get-FolderSize $backupPath
-            WorldFolder = $script:backupBaseDir
-            GameVersion = (Get-ConfigValue "ServerVersion")
-        }
-
-        $metadata | ConvertTo-Json | Set-Content (Join-Path $backupPath "metadata.json")
-
-        $script:lastBackupTime = Get-Date
-
-        Cleanup-OldBackups
-
-        Write-Output "Backup created: $backupName"
+    $ok = Invoke-WorldSaveREST -Reason $reason
+    if ($ok) {
+        Write-Host "REST save completed ($reason)." -ForegroundColor Green
         return $true
-
-    } catch {
-        Write-Error "Backup failed: $_"
+    } else {
+        Write-Warning "REST save failed ($reason)."
         return $false
     }
 }
 
 # ==========================================================================================
-# Get-BackupList
+# Get-BackupList  (compat shim for UI - no filesystem backups)
 # ==========================================================================================
-
 function Get-BackupList {
-    if (-not (Test-Path $script:backupMetadataDir)) { return @() }
+    # We no longer manage filesystem backups.
+    # Return a simple synthetic view based on lastBackupTime.
+    $list = @()
 
-    $backups = @()
-
-    Get-ChildItem $script:backupMetadataDir -Directory |
-        Sort-Object CreationTime -Descending |
-        ForEach-Object {
-
-            $metaPath = Join-Path $_.FullName "metadata.json"
-            $meta = @{
-                Name = $_.Name
-                Created = $_.CreationTime
-                SizeMB = Get-FolderSize $_.FullName
-                Description = ""
-            }
-
-            if (Test-Path $metaPath) {
-                try {
-                    $json = Get-Content $metaPath -Raw | ConvertFrom-Json
-                    $meta.Description = $json.Description
-                } catch {}
-            }
-
-            $backups += $meta
+    if ($script:lastBackupTime) {
+        $list += [pscustomobject]@{
+            Name        = "Last REST Save"
+            Created     = $script:lastBackupTime
+            SizeMB      = 0
+            Description = "REST API save only (no file backup)"
         }
+    }
 
-    return $backups
+    return $list
 }
 
 # ==========================================================================================
-# Restore-Backup
+# Restore-Backup / Delete-Backup (no-op stubs for compatibility)
 # ==========================================================================================
-
 function Restore-Backup {
     param([string]$backupName)
 
-    if ($script:serverRunning) {
-        Write-Error "Stop the server before restoring a backup."
-        return $false
-    }
-
-    $backupPath = Join-Path $script:backupMetadataDir $backupName
-    if (-not (Test-Path $backupPath)) {
-        Write-Error "Backup not found: $backupPath"
-        return $false
-    }
-
-    # Validate backup
-    if (-not (Test-Path (Join-Path $backupPath "world"))) {
-        Write-Error "Backup is missing world folder. Restore aborted."
-        return $false
-    }
-
-    $worldPath = Join-Path $script:backupBaseDir "world"
-
-    try {
-        # Safety backup
-        if (Test-Path $worldPath) {
-            $safety = Join-Path $script:backupMetadataDir "safety_$(Get-Date -Format 'yyyy-MM-dd_HH-mm-ss')"
-            New-Item -ItemType Directory -Path $safety | Out-Null
-            robocopy $worldPath (Join-Path $safety "world") /MIR /R:1 /W:1 | Out-Null
-        }
-
-        # Restore
-        Remove-Item $worldPath -Recurse -Force -ErrorAction SilentlyContinue
-        New-Item -ItemType Directory -Path $worldPath | Out-Null
-
-        robocopy (Join-Path $backupPath "world") $worldPath /MIR /R:1 /W:1 | Out-Null
-
-        Write-Output "Backup restored successfully."
-        return $true
-
-    } catch {
-        Write-Error "Restore failed: $_"
-        return $false
-    }
+    Write-Warning "Restore-Backup is no longer supported. Backups are now REST saves only."
+    return $false
 }
-
-# ==========================================================================================
-# Delete-Backup
-# ==========================================================================================
 
 function Delete-Backup {
     param([string]$backupName)
 
-    $backupPath = Join-Path $script:backupMetadataDir $backupName
-
-    if (-not (Test-Path $backupPath)) { return $false }
-
-    try {
-        Remove-Item $backupPath -Recurse -Force
-        Write-Output "Backup deleted: $backupName"
-        return $true
-    } catch {
-        Write-Error "Delete failed: $_"
-        return $false
-    }
-}
-
-# ==========================================================================================
-# Cleanup-OldBackups
-# ==========================================================================================
-
-function Cleanup-OldBackups {
-
-    $backups = Get-ChildItem $script:backupMetadataDir -Directory |
-               Sort-Object CreationTime -Descending
-
-    if ($backups.Count -le $script:maxBackups) { return }
-
-    $toDelete = $backups[$script:maxBackups..($backups.Count - 1)]
-
-    foreach ($b in $toDelete) {
-        try {
-            Remove-Item $b.FullName -Recurse -Force
-            Write-Output "Removed old backup: $($b.Name)"
-        } catch {
-            Write-Warning "Failed to delete backup: $($b.Name)"
-        }
-    }
-}
-
-# ==========================================================================================
-# Get-FolderSize
-# ==========================================================================================
-
-function Get-FolderSize {
-    param([string]$path)
-
-    if (-not (Test-Path $path)) { return 0 }
-
-    try {
-        $size = (Get-ChildItem $path -Recurse -Force |
-                 Measure-Object Length -Sum).Sum / 1MB
-        return [math]::Round($size, 2)
-    } catch {
-        return 0
-    }
-}
-
-# ==========================================================================================
-# Load-BackupMetadata / Save-BackupMetadata
-# ==========================================================================================
-
-function Load-BackupMetadata {
-    $file = Join-Path $script:backupMetadataDir "last_backup.txt"
-    if (Test-Path $file) {
-        try { $script:lastBackupTime = [datetime](Get-Content $file) } catch {}
-    }
-}
-
-function Save-BackupMetadata {
-    if ($script:lastBackupTime) {
-        $script:lastBackupTime | Out-File (Join-Path $script:backupMetadataDir "last_backup.txt")
-    }
+    Write-Warning "Delete-Backup is no longer supported. Backups are now REST saves only."
+    return $false
 }
 
 # ==========================================================================================
 # Cleanup-Backups
 # ==========================================================================================
-
 function Cleanup-Backups {
-    Save-BackupMetadata
     if ($script:autoBackupTimer) {
-        $script:autoBackupTimer.Stop()
-        $script:autoBackupTimer.Dispose()
+        try {
+            $script:autoBackupTimer.Stop()
+            $script:autoBackupTimer.Dispose()
+        } catch {}
+        $script:autoBackupTimer = $null
     }
 }

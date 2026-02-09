@@ -297,6 +297,12 @@ function Get-ServerSettingsREST {
 
 function Get-ServerMetricsREST {
     $resp = Invoke-RestAPIRequest-SafeRetry -Endpoint "metrics"
+
+    if (-not $script:serverRunning) {
+        return $null
+    }
+
+
     if ($resp) {
         return @{
             CPU     = $null                     # Not provided by your server

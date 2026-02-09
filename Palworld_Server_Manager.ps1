@@ -1,16 +1,6 @@
 # ==========================================================================================
 # Palworld Server Manager GUI - Version 1.0
 # ==========================================================================================
-# Modular PowerShell Windows Forms GUI for managing Palworld servers
-#
-# IMPORTANT NOTES:
-# - Must be run with Windows PowerShell (not PowerShell Core)
-# - Script should be placed in the PalServer root directory
-# ==========================================================================================
-
-# ==========================================================================================
-# NATIVE WINDOWS API IMPORTS (Hide console window)
-# ==========================================================================================
 
 Add-Type @"
 using System;
@@ -27,16 +17,8 @@ public class Win32 {
 $consolePtr = [Win32]::GetConsoleWindow()
 $null = [Win32]::ShowWindow($consolePtr, 0)
 
-# ==========================================================================================
-# .NET ASSEMBLY LOADING
-# ==========================================================================================
-
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
-
-# ==========================================================================================
-# LOAD MODULES IN DEPENDENCY ORDER (DOT-SOURCING)
-# ==========================================================================================
 
 $scriptRoot = $PSScriptRoot
 $modulePath = Join-Path $scriptRoot "modules"
@@ -48,9 +30,15 @@ if (-not (Test-Path $modulePath)) {
     exit 1
 }
 
-# Dot-source each module file
+# ⭐ Load ONLY Core.ps1 first (because it contains Redirect-PowerShellOutput)
+$coreFile = Join-Path $modulePath "Core.ps1"
+. $coreFile
+
+# ⭐ Install redirect BEFORE loading any other modules
+Redirect-PowerShellOutput
+
+# ⭐ Now load the rest of the modules
 $modules = @(
-    "Core.ps1",
     "ConfigManager.ps1", 
     "RCON.ps1",
     "REST_API.ps1",
@@ -71,10 +59,6 @@ foreach ($module in $modules) {
 }
 
 Write-Host "All modules loaded!" -ForegroundColor Green
-
-# ==========================================================================================
-# INITIALIZATION
-# ==========================================================================================
 
 try {
     Write-Host "`nInitializing systems..." -ForegroundColor Green
@@ -98,27 +82,27 @@ try {
     $null = Initialize-Monitoring
     
     Write-Host "  UI..." -ForegroundColor Cyan
-    # Suppress all output from Initialize-UI and capture ONLY the form object
-    $form = @(Initialize-UI)[-1]  # Get last item (the form)
-    
-    # Verify form object
-    if ($null -eq $form) {
-        throw "Form object is null"
+    $form = @(Initialize-UI)[-1]
+
+    if ($null -eq $form) { throw "Form object is null" }
+    if ($form.GetType().Name -ne "Form") {
+        throw "Expected Form, got $($form.GetType().Name)"
     }
-    
-    $formType = $form.GetType().Name
-    if ($formType -ne "Form") {
-        throw "Expected Form, got $formType"
-    }
-    
+
     Write-Host "`nManager ready! Starting UI..." -ForegroundColor Green
-    
-    # Show the form
     [void]$form.ShowDialog()
     
 } catch {
-    Write-Host "`nERROR: $_" -ForegroundColor Red
+    Write-Host "`nERROR: $($_.Exception.Message)" -ForegroundColor Red
+
+    if ($_.InvocationInfo) {
+        Write-Host "Location: $($_.InvocationInfo.ScriptName):$($_.InvocationInfo.ScriptLineNumber)" -ForegroundColor Yellow
+        Write-Host "Code: $($_.InvocationInfo.Line)" -ForegroundColor Yellow
+    }
+
+    Write-Host "`nStack Trace:" -ForegroundColor Red
     Write-Host $_.Exception.StackTrace -ForegroundColor Red
+
     
     [System.Windows.Forms.MessageBox]::Show(
         "Error: $_",

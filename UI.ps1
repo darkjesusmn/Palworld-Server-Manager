@@ -52,6 +52,7 @@ $script:cpuLabel = $null
 $script:ramLabel = $null
 $script:playerCountLabel = $null
 $script:settingsPath = Join-Path $script:serverRoot "psm_settings.json"
+$script:nextRestartTime = $null
 
 # ==========================================================================================
 # FUNCTION: Initialize-UI
@@ -64,10 +65,21 @@ function Initialize-UI {
     Restore-StartupArguments
 
     # Hook monitoring callback AFTER UI is built
-    $script:onMetricsUpdate = { Update-MetricsDisplay }
+    $script:onMetricsUpdate = { Update-MetricsREST }
+
+    Initialize-AutoRestart
+
+    # Mark UI as fully initialized
+    $script:uiReady = $true
+
+    # Start monitoring timer ONLY after UI is ready
+    if ($script:monitoringTimer) {
+        $script:monitoringTimer.Start()
+    }
 
     return $script:form
 }
+
 
 # ==========================================================================================
 # FUNCTION: Restore-StartupArguments
@@ -212,6 +224,15 @@ function New-ServerManagerForm {
     $script:playerCountLabel.Size = New-Object System.Drawing.Size(120, 20)
     $script:playerCountLabel.ForeColor = $colorTextDim
     $statusPanel.Controls.Add($script:playerCountLabel)
+
+    # Next Restart Timer
+    $script:nextRestartLabel = New-Object System.Windows.Forms.Label
+    $script:nextRestartLabel.Text = "Next Restart: --"
+    $script:nextRestartLabel.ForeColor = $colorText
+    $script:nextRestartLabel.Location = New-Object System.Drawing.Point(350, 70)   # adjust as needed
+    $script:nextRestartLabel.AutoSize = $true
+    $statusPanel.Controls.Add($script:nextRestartLabel)
+
 
     $form.Controls.Add($statusPanel)
 
@@ -470,6 +491,57 @@ function Build-ServerTab {
     $tab.Controls.Add($btnApplyArgs)
     $toolTip.SetToolTip($btnApplyArgs, "Apply selected startup arguments")
 
+    # 1. Create checkbox
+    $script:chkAutoRestart = New-Object System.Windows.Forms.CheckBox
+    $script:chkAutoRestart.Text = "Enable Auto-Restart (every 6 hours)"
+    $script:chkAutoRestart.Location = New-Object System.Drawing.Point(180, 255)
+    $script:chkAutoRestart.Size = New-Object System.Drawing.Size(300, 25)
+    $script:chkAutoRestart.ForeColor = $colorText
+    $script:chkAutoRestart.BackColor = $colorPanelBg
+
+    # 2. Load saved state
+    if ($script:autoRestartEnabled) {
+        $script:chkAutoRestart.Checked = $true
+    }
+
+    # 3. Add event handler
+    $script:chkAutoRestart.Add_CheckedChanged({
+
+        param($sender, $eventArgs)
+
+        Write-Host "CHECKBOX FIRED: $($sender.Checked)" -ForegroundColor Cyan
+
+        $script:autoRestartEnabled = $sender.Checked
+        Save-UISettings
+
+        if ($script:autoRestartEnabled) {
+
+            if ($script:serverRunning) {
+                # Server is running → start fresh 6h countdown
+                $script:nextRestartTime = (Get-Date).AddHours(6)
+            }
+            else {
+                # Server is stopped → do NOT start countdown yet
+                $script:nextRestartTime = $null
+                $script:nextRestartLabel.Text = "Next Restart: --"
+            }
+
+        }
+        else {
+            # Auto-restart disabled
+            $script:nextRestartTime = $null
+            if ($script:nextRestartLabel) {
+                $script:nextRestartLabel.Text = "Next Restart: --"
+            }
+        }
+    })
+
+    # 4. Add to UI
+    $tab.Controls.Add($script:chkAutoRestart)
+    $toolTip.SetToolTip($script:chkAutoRestart, "Automatically restart the server every 6 hours")
+
+
+
     # Current Arguments Display
     $lblCurrentArgs = New-Object System.Windows.Forms.Label
     $lblCurrentArgs.Text = "Current Arguments:"
@@ -510,7 +582,8 @@ function Build-ServerTab {
     $txtLogs.Font = New-Object System.Drawing.Font("Consolas", 8)
     $tab.Controls.Add($txtLogs)
     $toolTip.SetToolTip($txtLogs, "Live server console output")
-    $script:serverLogsBox = $txtLogs
+    Set-LogOutputBox $txtLogs
+
 
     # Clear Logs Button
     $btnClearLogs = New-Object System.Windows.Forms.Button
@@ -996,73 +1069,35 @@ function Refresh-PlayerList {
 function Build-MonitoringTab {
     param($tab, $toolTip)
 
-    # === MAIN PANEL (fills tab) ============================================
-    $mainPanel = New-Object System.Windows.Forms.Panel
+    # === MAIN SCROLLABLE VERTICAL LAYOUT ============================================
+    $mainPanel = New-Object System.Windows.Forms.FlowLayoutPanel
     $mainPanel.Dock = "Fill"
-    $mainPanel.AutoScroll = $false
+    $mainPanel.FlowDirection = "TopDown"
+    $mainPanel.WrapContents = $false
+    $mainPanel.AutoScroll = $false   # IMPORTANT: no scrolling for 720p embed
     $mainPanel.BackColor = $colorPanelBg
+    $mainPanel.Padding = '10,10,10,10'
     $tab.Controls.Add($mainPanel)
 
-    # === TITLE =============================================================
+    # === TITLE ======================================================================
     $lblTitle = New-Object System.Windows.Forms.Label
     $lblTitle.Text = "Server Monitoring (REST API)"
     $lblTitle.AutoSize = $true
     $lblTitle.ForeColor = $colorText
     $lblTitle.Font = New-Object System.Drawing.Font("Arial", 12, [System.Drawing.FontStyle]::Bold)
-    $lblTitle.Location = New-Object System.Drawing.Point(10, 10)
     $mainPanel.Controls.Add($lblTitle)
 
-    # === LABEL STACK =======================================================
-    $labelPanel = New-Object System.Windows.Forms.FlowLayoutPanel
-    $labelPanel.Location = New-Object System.Drawing.Point(10, 40)
-    $labelPanel.Size = New-Object System.Drawing.Size(350, 150)
-    $labelPanel.FlowDirection = "TopDown"
-    $labelPanel.WrapContents = $false
-    $labelPanel.AutoSize = $true
-    $labelPanel.BackColor = $colorPanelBg
-    $mainPanel.Controls.Add($labelPanel)
-
-# Create label objects
-$script:monitoringLabels = @{
-    CpuAvg  = New-Object System.Windows.Forms.Label
-    CpuPeak = New-Object System.Windows.Forms.Label
-    RamAvg  = New-Object System.Windows.Forms.Label
-    RamPeak = New-Object System.Windows.Forms.Label
-    Players = New-Object System.Windows.Forms.Label
-    FPS     = New-Object System.Windows.Forms.Label
-    Uptime  = New-Object System.Windows.Forms.Label
-    Health  = New-Object System.Windows.Forms.Label
-}
-
-foreach ($lbl in $script:monitoringLabels.Values) {
-    $lbl.AutoSize = $true
-    $lbl.ForeColor = $colorText
-    $lbl.Font = New-Object System.Drawing.Font("Arial", 10)
-    $labelPanel.Controls.Add($lbl)
-}
-
-# Default text
-$script:monitoringLabels.CpuAvg.Text  = "CPU: --"
-$script:monitoringLabels.CpuPeak.Text = "Threads/Handles: --"
-$script:monitoringLabels.RamAvg.Text  = "RAM: --"
-$script:monitoringLabels.RamPeak.Text = "Peak RAM: --"
-$script:monitoringLabels.Players.Text = "Players: --"
-$script:monitoringLabels.FPS.Text     = "FPS: --"
-$script:monitoringLabels.Uptime.Text  = "Uptime: --"
-
-$script:monitoringLabels.Health.Font = New-Object System.Drawing.Font("Arial", 11, [System.Drawing.FontStyle]::Bold)
-$script:monitoringLabels.Health.Text = "Health: --"
-
-    # === CHART GRID (2×2) ==================================================
+    # === CHART CREATOR =============================================================
     Add-Type -AssemblyName System.Windows.Forms.DataVisualization
 
     function New-LineChart {
         param($title, $seriesName, $color)
 
         $chart = New-Object System.Windows.Forms.DataVisualization.Charting.Chart
-        $chart.Width = 400
-        $chart.Height = 150
+        $chart.Width = 500
+        $chart.Height = 160
         $chart.BackColor = $colorPanelBg
+        $chart.Margin = '5,5,5,5'
 
         $area = New-Object System.Windows.Forms.DataVisualization.Charting.ChartArea
         $area.BackColor = $colorPanelBg
@@ -1081,6 +1116,7 @@ $script:monitoringLabels.Health.Text = "Health: --"
         $series.Name = $seriesName
         $chart.Series.Add($series)
 
+        # Title will be dynamically updated by Update-MetricsREST
         $chart.Titles.Add($title) | Out-Null
         $chart.Titles[0].ForeColor = $colorText
         $chart.Titles[0].Font = New-Object System.Drawing.Font("Arial", 9, [System.Drawing.FontStyle]::Bold)
@@ -1088,25 +1124,27 @@ $script:monitoringLabels.Health.Text = "Health: --"
         return $chart
     }
 
-    # Chart grid panel
+    # === CHART GRID (2×2) ===========================================================
     $chartGrid = New-Object System.Windows.Forms.TableLayoutPanel
-    $chartGrid.Location = New-Object System.Drawing.Point(10, 200)
-    $chartGrid.Size = New-Object System.Drawing.Size(820, 320)
     $chartGrid.ColumnCount = 2
     $chartGrid.RowCount = 2
     $chartGrid.BackColor = $colorPanelBg
-    $chartGrid.CellBorderStyle = "None"
-    $chartGrid.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Absolute, 410)))
-    $chartGrid.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Absolute, 410)))
+    $chartGrid.Margin = '0,10,0,10'
+    $chartGrid.AutoSize = $true
+
+    $chartGrid.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 50)))
+    $chartGrid.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 50)))
+
     $chartGrid.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 160)))
     $chartGrid.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 160)))
+
     $mainPanel.Controls.Add($chartGrid)
 
-    # Create charts
-    $script:cpuChart    = New-LineChart "CPU (%)"        "CPU"     $colorWarning
-    $script:ramChart    = New-LineChart "RAM (MB)"       "RAM"     $colorSuccess
-    $script:playerChart = New-LineChart "Players"        "Players" $colorButtonBg
-    $script:fpsChart    = New-LineChart "FPS"            "FPS"     $colorDanger
+    # === CREATE CHARTS ==============================================================
+    $script:cpuChart    = New-LineChart "CPU: -- | Threads: -- | Handles: --" "CPU"     $colorWarning
+    $script:ramChart    = New-LineChart "RAM: -- | Peak: --"                  "RAM"     $colorSuccess
+    $script:playerChart = New-LineChart "Players: --"                         "Players" $colorButtonBg
+    $script:fpsChart    = New-LineChart "FPS: --"                             "FPS"     $colorDanger
 
     # Add charts to grid
     $chartGrid.Controls.Add($script:cpuChart,    0, 0)
@@ -1114,15 +1152,15 @@ $script:monitoringLabels.Health.Text = "Health: --"
     $chartGrid.Controls.Add($script:playerChart, 0, 1)
     $chartGrid.Controls.Add($script:fpsChart,    1, 1)
 
-    # Refresh button
+    # === REFRESH BUTTON =============================================================
     $btnRefresh = New-Object System.Windows.Forms.Button
     $btnRefresh.Text = "[REFRESH NOW]"
-    $btnRefresh.Location = New-Object System.Drawing.Point(10, 540)
     $btnRefresh.Size = New-Object System.Drawing.Size(150, 35)
     $btnRefresh.BackColor = $colorButtonBg
     $btnRefresh.ForeColor = $colorButtonText
     $btnRefresh.FlatStyle = "Flat"
     $btnRefresh.Font = New-Object System.Drawing.Font("Arial", 9, [System.Drawing.FontStyle]::Bold)
+    $btnRefresh.Margin = '0,10,0,10'
     $btnRefresh.Add_Click({ Update-MetricsREST })
     $mainPanel.Controls.Add($btnRefresh)
 }
@@ -1458,6 +1496,36 @@ function Build-RCONTab {
 
 function Save-UISettings {
     try {
+
+        # Convert selectedArguments to a JSON-safe hashtable
+        $startupArgsHT = @{}
+        foreach ($key in $script:selectedArguments.Keys) {
+            $value = $script:selectedArguments[$key]
+
+            if ($value -is [System.Collections.Hashtable]) {
+                $startupArgsHT[$key] = $value
+            }
+            elseif ($value -is [System.Management.Automation.PSCustomObject]) {
+                $ht = @{}
+                $value.PSObject.Properties | ForEach-Object {
+                    $ht[$_.Name] = $_.Value
+                }
+                $startupArgsHT[$key] = $ht
+            }
+            else {
+                $startupArgsHT[$key] = $value
+            }
+        }
+
+        # Compute SelectedTab *before* building the hashtable
+        $selectedTab = 0
+        if ($script:form -and
+            $script:form.Controls.Count -gt 0 -and 
+            $script:form.Controls[0] -is [System.Windows.Forms.TabControl]) {
+
+            $selectedTab = $script:form.Controls[0].SelectedIndex
+        }
+
         $settings = @{
             Window = @{
                 Width  = $script:form.Width
@@ -1465,9 +1533,10 @@ function Save-UISettings {
                 X      = $script:form.Location.X
                 Y      = $script:form.Location.Y
             }
-            SelectedTab = $script:form.Controls[0].SelectedIndex
 
-            StartupArguments = $script:selectedArguments
+            SelectedTab      = $selectedTab
+            StartupArguments = $startupArgsHT
+            autoRestartEnabled = $script:autoRestartEnabled
 
             RCON = @{
                 Host     = $script:rconHost
@@ -1484,13 +1553,18 @@ function Save-UISettings {
         Set-Content -Path $script:settingsPath -Value $json -Encoding UTF8 -Force
 
     } catch {
-        Write-Warning "Failed to save UI settings: $_"
+        Write-Warning "Failed to save UI settings: $($_.Exception.Message)"
     }
 }
 
+
+#=========================================================================================
+# LOAD UI SETTINGS
+#=========================================================================================
+
 function Load-UISettings {
 
-    # CRITICAL FIX #1: Initialize selectedArguments IMMEDIATELY as empty hashtable
+    # Always initialize selectedArguments
     if ($null -eq $script:selectedArguments) {
         $script:selectedArguments = @{}
     }
@@ -1503,7 +1577,6 @@ function Load-UISettings {
     try {
         $json = Get-Content $script:settingsPath -Raw -Encoding UTF8 -ErrorAction Stop
         
-        # Validate JSON is not empty
         if ([string]::IsNullOrWhiteSpace($json)) {
             Write-Verbose "Settings file is empty - using defaults."
             return
@@ -1511,11 +1584,16 @@ function Load-UISettings {
 
         $settings = $json | ConvertFrom-Json -ErrorAction Stop
 
-        # Window size + position - ONLY if form is already initialized
-        if ($null -ne $settings.Window -and $null -ne $script:form) {
-            if ($null -ne $script:form.Width) {
-                $script:form.Width  = $settings.Window.Width
-                $script:form.Height = $settings.Window.Height
+        # ============================================================
+        # WINDOW SIZE + POSITION (ONLY if form is fully initialized)
+        # ============================================================
+        if ($null -ne $script:form -and $script:form -is [System.Windows.Forms.Form]) {
+
+            if ($settings.Window) {
+                if ($settings.Window.Width -and $settings.Window.Height) {
+                    $script:form.Width  = $settings.Window.Width
+                    $script:form.Height = $settings.Window.Height
+                }
 
                 if ($settings.Window.X -ge 0 -and $settings.Window.Y -ge 0) {
                     $script:form.StartPosition = "Manual"
@@ -1525,71 +1603,77 @@ function Load-UISettings {
                     )
                 }
             }
-        }
 
-        # Selected tab - ONLY if form is initialized
-        if ($null -ne $settings.SelectedTab -and $settings.SelectedTab -ge 0 -and $null -ne $script:form -and $script:form.Controls.Count -gt 0) {
-            try {
-                $script:form.Controls[0].SelectedIndex = $settings.SelectedTab
-            } catch {
-                # Silently ignore if tab control doesn't exist yet
+            # Selected tab (only if tab control exists)
+            if ($settings.SelectedTab -ne $null -and 
+                $script:form.Controls.Count -gt 0 -and 
+                $script:form.Controls[0] -is [System.Windows.Forms.TabControl]) {
+
+                try {
+                    $script:form.Controls[0].SelectedIndex = $settings.SelectedTab
+                } catch {}
             }
         }
 
-        # CRITICAL FIX #2 & #3: Startup arguments with proper PSCustomObject conversion
-        if ($null -ne $settings.StartupArguments) {
+        # ============================================================
+        # STARTUP ARGUMENTS (convert PSCustomObject → Hashtable)
+        # ============================================================
+        if ($settings.StartupArguments) {
             try {
-                # Clear and rebuild as hashtable
                 $script:selectedArguments = @{}
-                
-                # ConvertFrom-Json creates PSCustomObject, we need to convert to Hashtable
+
                 $settings.StartupArguments.PSObject.Properties | ForEach-Object {
                     $key = $_.Name
                     $valueObj = $_.Value
-                    
-                    # If it's a PSCustomObject (nested object from JSON), convert to Hashtable
+
                     if ($valueObj -is [System.Management.Automation.PSCustomObject]) {
-                        $hashtableValue = @{}
+                        $ht = @{}
                         $valueObj.PSObject.Properties | ForEach-Object {
-                            $hashtableValue[$_.Name] = $_.Value
+                            $ht[$_.Name] = $_.Value
                         }
-                        $script:selectedArguments[$key] = $hashtableValue
-                    } else {
-                        # Simple value, assign directly
+                        $script:selectedArguments[$key] = $ht
+                    }
+                    else {
                         $script:selectedArguments[$key] = $valueObj
                     }
                 }
-                
-                # Rebuild startup arguments display
-                Build-StartupArguments
-                if ($null -ne $script:currentArgsDisplay) {
-                    $script:currentArgsDisplay.Text = $script:startupArguments
-                }
+
             } catch {
                 Write-Warning "Failed to restore startup arguments: $_"
                 $script:selectedArguments = @{}
             }
         }
 
-        # RCON settings - add null checks
-        if ($null -ne $settings.RCON) {
-            if ($null -ne $settings.RCON.Host)     { $script:rconHost = $settings.RCON.Host }
-            if ($null -ne $settings.RCON.Port)     { $script:rconPort = $settings.RCON.Port }
-            if ($null -ne $settings.RCON.Password) { $script:rconPassword = $settings.RCON.Password }
+        # ============================================================
+        # AUTO-RESTART SETTING
+        # ============================================================
+        if ($settings.autoRestartEnabled -ne $null) {
+            $script:autoRestartEnabled = $settings.autoRestartEnabled
         }
 
-        # Backup settings - add null checks
-        if ($null -ne $settings.Backups) {
-            if ($null -ne $settings.Backups.AutoBackupInterval) {
+        # ============================================================
+        # RCON SETTINGS
+        # ============================================================
+        if ($settings.RCON) {
+            if ($settings.RCON.Host)     { $script:rconHost = $settings.RCON.Host }
+            if ($settings.RCON.Port)     { $script:rconPort = $settings.RCON.Port }
+            if ($settings.RCON.Password) { $script:rconPassword = $settings.RCON.Password }
+        }
+
+        # ============================================================
+        # BACKUP SETTINGS
+        # ============================================================
+        if ($settings.Backups) {
+            if ($settings.Backups.AutoBackupInterval) {
                 $script:autoBackupInterval = $settings.Backups.AutoBackupInterval
             }
         }
 
     } catch {
         Write-Warning "Failed to load UI settings: $($_.Exception.Message)"
-        # selectedArguments already initialized above, so it won't be null
     }
 }
+
 
 
 # ==========================================================================================
@@ -1610,6 +1694,9 @@ function Update-StatusDisplay {
         $script:statusLabel.ForeColor = $colorDanger
     }
 }
+#=========================================================================================
+# UPDATE METRICS DISPLAY
+#=========================================================================================
 
 function Update-MetricsDisplay {
 
@@ -1641,34 +1728,79 @@ function Update-MetricsDisplay {
         $script:monitoringLabels.Health.ForeColor = $health.Color
     }
 
+    # === Auto-Restart Countdown Update ===
+    if ($script:nextRestartLabel -ne $null) {
+        Write-Host "COUNTDOWN: Enabled=$script:autoRestartEnabled Time=$script:nextRestartTime Label=$($script:nextRestartLabel.Text)" -ForegroundColor Magenta
+        
+        if ($script:autoRestartEnabled -and $script:nextRestartTime) {
+
+            $remaining = $script:nextRestartTime - (Get-Date)
+
+            if ($remaining.TotalSeconds -le 0) {
+                $script:nextRestartLabel.Text = "Next Restart: NOW"
+            }
+            else {
+                $hours   = [int]$remaining.TotalHours
+                $minutes = $remaining.Minutes
+                $seconds = $remaining.Seconds
+
+                $script:nextRestartLabel.Text = "Next Restart: {0:00}:{1:00}:{2:00}" -f $hours, $minutes, $seconds
+            }
+        }
+        else {
+            $script:nextRestartLabel.Text = "Next Restart: --"
+        }
+    }
+
     # Charts
     Update-MonitoringCharts
 }
 
 
 
+#=========================================================================================
+# RESTART SERVER
+#========================================================================================= 
 
 function Restart-Server {
-    # Stop the server
+
+    Write-Host "`n=== SERVER RESTART INITIATED ===" -ForegroundColor Yellow
+
+    # --- STOP SERVER --------------------------------------------------------------
     Stop-Server | Out-Null
-    
-    # Wait for the process to actually exit (up to 30 seconds)
+
+    # --- WAIT FOR PROCESS TO EXIT -------------------------------------------------
     $waitTime = 0
-    $maxWait = 30
-    while ($null -ne $script:serverProcess -and -not $script:serverProcess.HasExited -and $waitTime -lt $maxWait) {
+    $maxWait  = 30
+
+    while ($null -ne $script:serverProcess -and 
+           -not $script:serverProcess.HasExited -and 
+           $waitTime -lt $maxWait) {
+
         Start-Sleep -Seconds 1
         $waitTime++
     }
-    
-    # Force kill if still running
+
+    # --- FORCE KILL IF STILL RUNNING ----------------------------------------------
     if ($null -ne $script:serverProcess -and -not $script:serverProcess.HasExited) {
+        Write-Host "Force killing server process..." -ForegroundColor Red
         try { $script:serverProcess.Kill() } catch {}
         Start-Sleep -Seconds 2
     }
-    
-    # Start the server
+
+    # --- RESET MONITORING UI BEFORE RESTART ---------------------------------------
+    Reset-MonitoringUI
+
+    # --- CLEAR PROCESS REFERENCE --------------------------------------------------
+    $script:serverProcess = $null
+
+    # --- START SERVER --------------------------------------------------------------
+    Write-Host "Starting server..." -ForegroundColor Green
     Start-Server | Out-Null
+
+    Write-Host "=== SERVER RESTART COMPLETE ===" -ForegroundColor Green
 }
+
 
 # ==========================================================================================
 # CLEANUP
