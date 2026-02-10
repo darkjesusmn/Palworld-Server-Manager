@@ -25,6 +25,7 @@ $script:restApiKey = "DJMN-Palworld-Admin-2026"
 function Initialize-RestAPI {
     Write-Verbose "Initializing REST API..."
 
+    # Ensure config is loaded
     if (-not $script:configCache -or $script:configCache.Count -eq 0) {
         if (Get-Command Initialize-ConfigManager -ErrorAction SilentlyContinue) {
             Initialize-ConfigManager
@@ -33,10 +34,17 @@ function Initialize-RestAPI {
         }
     }
 
-    # Load REST API settings from config WITHOUT verifying the key yet
-    # Verification happens on-demand when server is running (20 seconds after Start)
+    # Skip REST API verification during GUI startup
+    if (-not $script:serverRunning) {
+        Write-Verbose "Skipping REST API initialization checks - server not running yet."
+        Load-RestAPISettings-NoVerify
+        return
+    }
+
+    # Normal behavior when server *is* running
     Load-RestAPISettings-NoVerify
 }
+
 
 # ==========================================================================================
 # Load-RestAPISettings-NoVerify (Lightweight - No API Check)
@@ -274,12 +282,14 @@ function Invoke-RestAPIRequest-SafeRetry {
 # ==========================================================================================
 
 function Get-ServerInfo {
+    if (-not $script:serverRunning) { return $false }
     $resp = Invoke-RestAPIRequest-SafeRetry -Endpoint "info"
     if ($resp) { return @{ ServerName=$resp.servername; Version=$resp.version; Status="Online"; Players=$resp.player_count } }
     return $null
 }
 
 function Get-PlayersREST {
+    if (-not $script:serverRunning) { return $false }
     $resp = Invoke-RestAPIRequest-SafeRetry -Endpoint "players"
     if ($resp -and $resp.players) {
         $players = @()
@@ -291,78 +301,94 @@ function Get-PlayersREST {
     return @()
 }
 
-function Get-ServerSettingsREST { 
+function Get-ServerSettingsREST {
+    if (-not $script:serverRunning) { return $null } 
     return Invoke-RestAPIRequest-SafeRetry -Endpoint "settings" 
 }
 
 function Get-ServerMetricsREST {
-    $resp = Invoke-RestAPIRequest-SafeRetry -Endpoint "metrics"
 
+    # Skip REST API calls until server is running
     if (-not $script:serverRunning) {
         return $null
     }
 
+    $resp = Invoke-RestAPIRequest-SafeRetry -Endpoint "metrics"
 
     if ($resp) {
         return @{
-            CPU     = $null                     # Not provided by your server
-            RAM     = $null                     # Not provided by your server
+            CPU     = $null
+            RAM     = $null
             Players = $resp.currentplayernum
             FPS     = $resp.serverfps
             Uptime  = $resp.uptime
         }
     }
+
     return $null
 }
 
 
 
-function Send-Announcement { 
+
+function Send-Announcement {
+     
     param([string]$Message)
+    if (-not $script:serverRunning) { return $false }
     if ([string]::IsNullOrWhiteSpace($Message)) { Write-Error "Message empty"; return $false }
     $body = @{message=$Message}
     return (Invoke-RestAPIRequest-SafeRetry -Endpoint "announce" -Method "POST" -Body $body -TimeoutSeconds $script:restApiTimeout -WaitForSeconds 10) -ne $null
 }
 
-function Kick-PlayerREST { 
+function Kick-PlayerREST {
+     
     param([string]$UserID,[string]$Message="You have been kicked")
+    if (-not $script:serverRunning) { return $false }
     if ([string]::IsNullOrWhiteSpace($UserID)){ Write-Error "UserID empty"; return $false }
     $body = @{userid=$UserID;message=$Message}
     return (Invoke-RestAPIRequest-SafeRetry -Endpoint "kick" -Method "POST" -Body $body -TimeoutSeconds $script:restApiTimeout -WaitForSeconds 10) -ne $null
 }
 
-function Ban-PlayerREST { 
+function Ban-PlayerREST {
+    
     param([string]$UserID,[string]$Message="You have been banned")
+    if (-not $script:serverRunning) { return $false }
     if ([string]::IsNullOrWhiteSpace($UserID)){ Write-Error "UserID empty"; return $false }
     $body = @{userid=$UserID;message=$Message}
     return (Invoke-RestAPIRequest-SafeRetry -Endpoint "ban" -Method "POST" -Body $body -TimeoutSeconds $script:restApiTimeout -WaitForSeconds 10) -ne $null
 }
 
-function Unban-PlayerREST { 
+function Unban-PlayerREST {
+     
     param([string]$UserID)
+    if (-not $script:serverRunning) { return $false }
     if ([string]::IsNullOrWhiteSpace($UserID)){ Write-Error "UserID empty"; return $false }
     $body = @{userid=$UserID}
     return (Invoke-RestAPIRequest-SafeRetry -Endpoint "unban" -Method "POST" -Body $body -TimeoutSeconds $script:restApiTimeout -WaitForSeconds 10) -ne $null
 }
 
-function Save-WorldREST { 
+function Save-WorldREST {
+    if (-not $script:serverRunning) { return $false } 
     return (Invoke-RestAPIRequest-SafeRetry -Endpoint "save" -Method "POST" -TimeoutSeconds $script:restApiTimeout -WaitForSeconds 10) -ne $null
 }
 
 function Shutdown-ServerREST { 
     param([int]$WaitTimeSeconds=30,[string]$Message="Server will shutdown soon.")
+    if (-not $script:serverRunning) { return $false }
     $body = @{waittime=$WaitTimeSeconds;message=$Message}
     return (Invoke-RestAPIRequest-SafeRetry -Endpoint "shutdown" -Method "POST" -Body $body -TimeoutSeconds $script:restApiTimeout -WaitForSeconds 10) -ne $null
 }
 
-function Stop-ServerREST { 
+function Stop-ServerREST {
+    if (-not $script:serverRunning) { return $false } 
     return (Invoke-RestAPIRequest-SafeRetry -Endpoint "stop" -Method "POST" -TimeoutSeconds $script:restApiTimeout -WaitForSeconds 10) -ne $null
 }
 
 # ==========================================================================================
 # Test-RestAPIConnection
 # ==========================================================================================
-function Test-RestAPIConnection { 
+function Test-RestAPIConnection {
+    if (-not $script:serverRunning) { return $false }  
     return (Invoke-RestAPIRequest-SafeRetry -Endpoint "info" -Method "GET" -TimeoutSeconds $script:restApiTimeout -WaitForSeconds 10) -ne $null
 }
 

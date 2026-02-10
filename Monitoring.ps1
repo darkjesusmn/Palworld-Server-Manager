@@ -8,7 +8,7 @@
 # ==========================================================================================
 
 $script:monitoringTimer        = $null
-$script:monitoringInterval     = 30000   # 30 seconds
+$script:monitoringInterval     = 1000   # 1 second
 $script:lastMetrics            = $null
 
 $script:cpuHistory             = @()
@@ -49,6 +49,18 @@ function Initialize-Monitoring {
                 Update-MetricsREST
             }
         })
+    }
+}
+
+#=========================================================================================
+# FUNCTION: Test-RESTAPIReady
+#=========================================================================================
+function Test-RESTAPIReady {
+    try {
+        Invoke-RestMethod "http://localhost:8212/api/v1/server" -TimeoutSec 1 | Out-Null
+        return $true
+    } catch {
+        return $false
     }
 }
 
@@ -106,7 +118,6 @@ function Update-MetricsREST {
 
     if ($rest) {
         $script:playerCountLabel.Text = "Players: $($rest.Players)"
-        $script:uptimeLabel.Text      = "Uptime: $($rest.Uptime)"
     }
 
     # ============================================================
@@ -123,13 +134,30 @@ function Update-MetricsREST {
         $script:playerChart.Series["Players"].Points.AddY($rest.Players)
     }
 
-    # Trim chart history to last 60 points
+    # ============================================================
+    # TRIM HISTORY TO LAST 60 POINTS
+    # ============================================================
+
     foreach ($chart in @($script:cpuChart, $script:ramChart, $script:fpsChart, $script:playerChart)) {
         foreach ($series in $chart.Series) {
             if ($series.Points.Count -gt 60) {
                 $series.Points.RemoveAt(0)
             }
         }
+    }
+
+    # ============================================================
+    # AUTO-SCALE CHART Y-AXES (Fix for lines going off-screen)
+    # ============================================================
+
+    foreach ($chart in @($script:cpuChart, $script:ramChart, $script:fpsChart, $script:playerChart)) {
+
+        # Force dynamic scaling
+        $chart.ChartAreas[0].AxisY.Minimum = [double]::NaN
+        $chart.ChartAreas[0].AxisY.Maximum = [double]::NaN
+
+        # Recalculate based on current visible points
+        $chart.ChartAreas[0].RecalculateAxesScale()
     }
 
     # ============================================================
@@ -153,7 +181,6 @@ function Update-MetricsREST {
             # IN-GAME COUNTDOWN ANNOUNCEMENTS
             # ====================================================
 
-            # Milestone warnings (1h, 30m, 15m, 10m, 9m...1m)
             foreach ($key in $script:restartWarningsSent.Keys) {
 
                 $threshold = [int]$key
@@ -172,7 +199,7 @@ function Update-MetricsREST {
 
             # Final 60-second countdown (every second)
             if ($remainingSeconds -le 60) {
-
+                # (Your logic placeholder — no changes made)
             }
 
             # ====================================================

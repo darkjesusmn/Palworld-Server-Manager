@@ -8,19 +8,59 @@ Add-Type -AssemblyName Microsoft.VisualBasic
 # ==========================================================================================
 # COLOR SCHEME
 # ==========================================================================================
+# theme colors
+$script:Themes = @{
+    "Dark" = @{
+        Bg            = [System.Drawing.Color]::FromArgb(30, 30, 30)
+        PanelBg       = [System.Drawing.Color]::FromArgb(45, 45, 45)
+        Text          = [System.Drawing.Color]::FromArgb(220, 220, 220)
+        TextDim       = [System.Drawing.Color]::FromArgb(150, 150, 150)
+        ButtonBg      = [System.Drawing.Color]::FromArgb(0, 120, 215)
+        ButtonText    = [System.Drawing.Color]::White
+        ButtonHover   = [System.Drawing.Color]::FromArgb(0, 140, 235)
+        Danger        = [System.Drawing.Color]::FromArgb(220, 53, 69)
+        Success       = [System.Drawing.Color]::FromArgb(40, 167, 69)
+        Warning       = [System.Drawing.Color]::FromArgb(255, 193, 7)
+        TextboxBg     = [System.Drawing.Color]::FromArgb(60, 60, 60)
+        TextboxText   = [System.Drawing.Color]::FromArgb(200, 200, 200)
+    }
+}
 
-$colorBg = [System.Drawing.Color]::FromArgb(30, 30, 30)
-$colorPanelBg = [System.Drawing.Color]::FromArgb(45, 45, 45)
-$colorText = [System.Drawing.Color]::FromArgb(220, 220, 220)
-$colorTextDim = [System.Drawing.Color]::FromArgb(150, 150, 150)
-$colorButtonBg = [System.Drawing.Color]::FromArgb(0, 120, 215)
-$colorButtonText = [System.Drawing.Color]::White
-$colorButtonHover = [System.Drawing.Color]::FromArgb(0, 140, 235)
-$colorDanger = [System.Drawing.Color]::FromArgb(220, 53, 69)
-$colorSuccess = [System.Drawing.Color]::FromArgb(40, 167, 69)
-$colorWarning = [System.Drawing.Color]::FromArgb(255, 193, 7)
-$colorTextboxBg = [System.Drawing.Color]::FromArgb(60, 60, 60)
-$colorTextboxText = [System.Drawing.Color]::FromArgb(200, 200, 200)
+$script:Themes["Midnight Blue"] = @{
+    Bg            = [System.Drawing.Color]::FromArgb(20, 25, 40)
+    PanelBg       = [System.Drawing.Color]::FromArgb(30, 35, 55)
+    Text          = [System.Drawing.Color]::White
+    TextDim       = [System.Drawing.Color]::FromArgb(160, 160, 160)
+    ButtonBg      = [System.Drawing.Color]::FromArgb(50, 60, 90)
+    ButtonText    = [System.Drawing.Color]::White
+    ButtonHover   = [System.Drawing.Color]::FromArgb(70, 80, 120)
+    Danger        = [System.Drawing.Color]::FromArgb(200, 60, 60)
+    Success       = [System.Drawing.Color]::FromArgb(50, 150, 50)
+    Warning       = [System.Drawing.Color]::FromArgb(255, 200, 50)
+    TextboxBg     = [System.Drawing.Color]::FromArgb(25, 30, 45)
+    TextboxText   = [System.Drawing.Color]::White
+}
+
+Write-Host "Loaded themes: $($script:Themes.Keys -join ', ')" -ForegroundColor Yellow
+
+
+
+# Load default theme
+$theme = $script:Themes["Dark"]
+# default colors
+$colorBg          = $theme.Bg
+$colorPanelBg     = $theme.PanelBg
+$colorText        = $theme.Text
+$colorTextDim     = $theme.TextDim
+$colorButtonBg    = $theme.ButtonBg
+$colorButtonText  = $theme.ButtonText
+$colorButtonHover = $theme.ButtonHover
+$colorDanger      = $theme.Danger
+$colorSuccess     = $theme.Success
+$colorWarning     = $theme.Warning
+$colorTextboxBg   = $theme.TextboxBg
+$colorTextboxText = $theme.TextboxText
+
 
 # ==========================================================================================
 # STARTUP ARGUMENT DEFINITIONS
@@ -53,6 +93,7 @@ $script:ramLabel = $null
 $script:playerCountLabel = $null
 $script:settingsPath = Join-Path $script:serverRoot "psm_settings.json"
 $script:nextRestartTime = $null
+$script:rootPath = Split-Path $PSScriptRoot -Parent
 
 # ==========================================================================================
 # FUNCTION: Initialize-UI
@@ -69,6 +110,28 @@ function Initialize-UI {
 
     Initialize-AutoRestart
 
+    # ------------------------------------------------------------
+    # REAL-TIME CONSOLE LOG UPDATE TIMER
+    # ------------------------------------------------------------
+    # This timer polls the rolling log file created by the
+    # Console Redirect Engine in your main script.
+    # Any new lines are pushed into the GUI console window.
+    # ------------------------------------------------------------
+    $ConsoleUpdateTimer = New-Object System.Windows.Forms.Timer
+    $ConsoleUpdateTimer.Interval = 300   # update every 0.3 seconds
+
+    $ConsoleUpdateTimer.Add_Tick({
+        $newLines = Get-ConsoleLogTail
+        foreach ($line in $newLines) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            Append-ServerConsole $line
+        }
+    })
+
+    $ConsoleUpdateTimer.Start()
+    $script:ConsoleUpdateTimer = $ConsoleUpdateTimer
+    # ------------------------------------------------------------
+
     # Mark UI as fully initialized
     $script:uiReady = $true
 
@@ -79,6 +142,7 @@ function Initialize-UI {
 
     return $script:form
 }
+
 
 
 # ==========================================================================================
@@ -157,12 +221,77 @@ function Setup-EventCallbacks {
 }
 
 # ==========================================================================================
+# FUNCTION: Apply-ThemeToUI
+# ==========================================================================================
+function Apply-ThemeToUI {
+
+    function ApplyThemeToControl($control) {
+
+        # Label
+        if ($control -is [System.Windows.Forms.Label]) {
+            $control.ForeColor = $colorText
+        }
+
+        # Button
+        elseif ($control -is [System.Windows.Forms.Button]) {
+            $control.BackColor = $colorButtonBg
+            $control.ForeColor = $colorButtonText
+        }
+
+        # TextBox
+        elseif ($control -is [System.Windows.Forms.TextBox]) {
+            $control.BackColor = $colorTextboxBg
+            $control.ForeColor = $colorTextboxText
+        }
+
+        # Panel
+        elseif ($control -is [System.Windows.Forms.Panel]) {
+            $control.BackColor = $colorPanelBg
+        }
+
+        # TabPage
+        elseif ($control -is [System.Windows.Forms.TabPage]) {
+            $control.BackColor = $colorPanelBg
+            $control.ForeColor = $colorText
+        }
+
+        # DataGridView
+        elseif ($control -is [System.Windows.Forms.DataGridView]) {
+            $control.BackgroundColor = $colorTextboxBg
+            $control.ForeColor = $colorTextboxText
+            $control.ColumnHeadersDefaultCellStyle.BackColor = $colorPanelBg
+            $control.ColumnHeadersDefaultCellStyle.ForeColor = $colorText
+            $control.DefaultCellStyle.BackColor = $colorTextboxBg
+            $control.DefaultCellStyle.ForeColor = $colorTextboxText
+
+            foreach ($row in $control.Rows) {
+                $row.DefaultCellStyle.BackColor = $colorTextboxBg
+                $row.DefaultCellStyle.ForeColor = $colorTextboxText
+            }
+        }
+
+        # Recurse into children
+        foreach ($child in $control.Controls) {
+            ApplyThemeToControl $child
+        }
+    }
+
+    # Apply theme to the entire form and all nested controls
+    ApplyThemeToControl $script:form
+}
+
+
+
+
+
+# ==========================================================================================
 # FUNCTION: New-ServerManagerForm
 # ==========================================================================================
 
 function New-ServerManagerForm {
 
     $form = New-Object System.Windows.Forms.Form
+    $script:form = $form
     $form.Text = "Palworld Server Manager"
     $form.Size = New-Object System.Drawing.Size(1100, 750)
     $form.StartPosition = "CenterScreen"
@@ -233,8 +362,62 @@ function New-ServerManagerForm {
     $script:nextRestartLabel.AutoSize = $true
     $statusPanel.Controls.Add($script:nextRestartLabel)
 
+    
+
+
+
 
     $form.Controls.Add($statusPanel)
+
+    $form.Controls.Add($statusPanel)
+
+    # ====================
+    # THEME DROPDOWN
+    # ====================
+    $themeDropdown = New-Object System.Windows.Forms.ComboBox
+    $themeDropdown.Location = New-Object System.Drawing.Point(900, 15)
+    $themeDropdown.Size = New-Object System.Drawing.Size(150, 25)
+    $themeDropdown.DropDownStyle = "DropDownList"
+    Write-Host "DEBUG: Themes.Keys = $($script:Themes.Keys -join ', ')" -ForegroundColor Yellow
+    $themeDropdown.Items.Clear()
+    if ($script:Themes.Keys.Count -eq 0) { 
+        Write-Host "ERROR: No themes loaded!" -ForegroundColor Red 
+    } else { 
+        $themeDropdown.Items.AddRange([string[]]$script:Themes.Keys)
+        $items = $themeDropdown.Items | ForEach-Object { "'$_'" }
+        Write-Host "DEBUG: Dropdown items = $($items -join ', ')" -ForegroundColor Green
+    }
+    $themeDropdown.SelectedItem = "Dark"
+
+    $themeDropdown.Add_SelectedIndexChanged({
+        $selected = $themeDropdown.SelectedItem
+        Write-Host "Theme changed to: $selected" -ForegroundColor Cyan # ← PUT IT RIGHT HERE
+        if (-not $selected) { return }
+        $theme = $script:Themes[$selected]
+        if (-not $theme) { return }
+
+        # Update global color variables
+        $colorBg          = $theme.Bg
+        $colorPanelBg     = $theme.PanelBg
+        $colorText        = $theme.Text
+        $colorTextDim     = $theme.TextDim
+        $colorButtonBg    = $theme.ButtonBg
+        $colorButtonText  = $theme.ButtonText
+        $colorButtonHover = $theme.ButtonHover
+        $colorDanger      = $theme.Danger
+        $colorSuccess     = $theme.Success
+        $colorWarning     = $theme.Warning
+        $colorTextboxBg   = $theme.TextboxBg
+        $colorTextboxText = $theme.TextboxText
+
+        Apply-ThemeToUI
+    })
+
+    $statusPanel.Controls.Add($themeDropdown)
+
+
+
+
 
     # ====================
     # CONTROL BUTTONS
@@ -354,10 +537,20 @@ function New-ServerManagerForm {
     $tabControl.TabPages.Add($tabMonitoring)
 
     $tabRCON = New-Object System.Windows.Forms.TabPage
-    $tabRCON.Text = "RCON Console"
+    $tabRCON.Text = "Console"
     $tabRCON.BackColor = $colorPanelBg
     Build-RCONTab $tabRCON $toolTip
     $tabControl.TabPages.Add($tabRCON)
+
+    # ============================
+    # SteamCMD Tab
+    # ============================
+    $steamcmdTab = New-Object System.Windows.Forms.TabPage
+    $steamcmdTab.Text = "SteamCMD"
+    $steamcmdTab.BackColor = $colorPanelBg
+    Build-SteamCMDTab $steamcmdTab $toolTip
+    $tabControl.TabPages.Add($steamcmdTab)
+
 
     # Add tab control to form
     $form.Controls.Add($tabControl)
@@ -391,16 +584,32 @@ function New-ServerManagerForm {
 function Build-ServerTab {
     param($tab, $toolTip)
 
-    # Title
+    # ============================================================
+    # HEADER: Server Startup Arguments + Apply Button
+    # ============================================================
     $lblArgsTitle = New-Object System.Windows.Forms.Label
     $lblArgsTitle.Text = "Server Startup Arguments:"
     $lblArgsTitle.Location = New-Object System.Drawing.Point(10, 10)
-    $lblArgsTitle.Size = New-Object System.Drawing.Size(400, 20)
+    $lblArgsTitle.Size = New-Object System.Drawing.Size(250, 20)
     $lblArgsTitle.ForeColor = $colorText
     $lblArgsTitle.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Bold)
     $tab.Controls.Add($lblArgsTitle)
 
-    # Scrollable panel for arguments
+    # Apply Arguments button (now next to header)
+    $btnApplyArgs = New-Object System.Windows.Forms.Button
+    $btnApplyArgs.Text = "Apply"
+    $btnApplyArgs.Location = New-Object System.Drawing.Point(270, 8)
+    $btnApplyArgs.Size = New-Object System.Drawing.Size(70, 25)
+    $btnApplyArgs.BackColor = $colorSuccess
+    $btnApplyArgs.ForeColor = $colorButtonText
+    $btnApplyArgs.FlatStyle = "Flat"
+    $btnApplyArgs.Font = New-Object System.Drawing.Font("Arial", 8, [System.Drawing.FontStyle]::Bold)
+    $tab.Controls.Add($btnApplyArgs)
+    $toolTip.SetToolTip($btnApplyArgs, "Apply selected startup arguments")
+
+    # ============================================================
+    # ARGUMENTS PANEL
+    # ============================================================
     $panelArgs = New-Object System.Windows.Forms.Panel
     $panelArgs.Location = New-Object System.Drawing.Point(10, 35)
     $panelArgs.Size = New-Object System.Drawing.Size(1070, 200)
@@ -443,21 +652,39 @@ function Build-ServerTab {
         $yPos += 30
     }
 
-    # Apply Arguments Button
-    $btnApplyArgs = New-Object System.Windows.Forms.Button
-    $btnApplyArgs.Text = "[APPLY ARGUMENTS]"
-    $btnApplyArgs.Location = New-Object System.Drawing.Point(10, 245)
-    $btnApplyArgs.Size = New-Object System.Drawing.Size(150, 35)
-    $btnApplyArgs.BackColor = $colorSuccess
-    $btnApplyArgs.ForeColor = $colorButtonText
-    $btnApplyArgs.FlatStyle = "Flat"
-    $btnApplyArgs.Font = New-Object System.Drawing.Font("Arial", 9, [System.Drawing.FontStyle]::Bold)
+    # ============================================================
+    # CURRENT ARGUMENTS (inside panel)
+    # ============================================================
+    $lblCurrentArgs = New-Object System.Windows.Forms.Label
+    $lblCurrentArgs.Text = "Current Arguments:"
+    $lblCurrentArgs.Location = New-Object System.Drawing.Point(10, $yPos)
+    $lblCurrentArgs.Size = New-Object System.Drawing.Size(200, 20)
+    $lblCurrentArgs.ForeColor = $colorText
+    $lblCurrentArgs.Font = New-Object System.Drawing.Font("Arial", 9, [System.Drawing.FontStyle]::Bold)
+    $panelArgs.Controls.Add($lblCurrentArgs)
 
+    $yPos += 25
+
+    $txtCurrentArgs = New-Object System.Windows.Forms.TextBox
+    $txtCurrentArgs.Location = New-Object System.Drawing.Point(10, $yPos)
+    $txtCurrentArgs.Size = New-Object System.Drawing.Size(1020, 50)
+    $txtCurrentArgs.Multiline = $true
+    $txtCurrentArgs.ReadOnly = $true
+    $txtCurrentArgs.BackColor = $colorTextboxBg
+    $txtCurrentArgs.ForeColor = $colorTextboxText
+    $txtCurrentArgs.Text = $script:startupArguments
+    $panelArgs.Controls.Add($txtCurrentArgs)
+    $script:currentArgsDisplay = $txtCurrentArgs
+
+    $yPos += 60
+
+    # ============================================================
+    # APPLY ARGUMENTS BUTTON (logic stays the same)
+    # ============================================================
     $btnApplyArgs.Add_Click({
         foreach ($argDef in $script:startupArgsDefinitions) {
             $chk = $script:argumentCheckboxes[$argDef.Name]
 
-            # Check if property exists (works for both Hashtable and PSCustomObject)
             if ($null -eq $script:selectedArguments.$($argDef.Name)) {
                 $script:selectedArguments[$argDef.Name] = @{}
             }
@@ -483,52 +710,38 @@ function Build-ServerTab {
         if ($script:currentArgsDisplay) {
             $script:currentArgsDisplay.Text = $script:startupArguments
         }
-        
-        # Save settings immediately so arguments persist
+
         Save-UISettings
     })
 
-    $tab.Controls.Add($btnApplyArgs)
-    $toolTip.SetToolTip($btnApplyArgs, "Apply selected startup arguments")
-
-    # 1. Create checkbox
+    # ============================================================
+    # AUTO-RESTART CHECKBOX (moved to top row)
+    # ============================================================
     $script:chkAutoRestart = New-Object System.Windows.Forms.CheckBox
-    $script:chkAutoRestart.Text = "Enable Auto-Restart (every 6 hours)"
-    $script:chkAutoRestart.Location = New-Object System.Drawing.Point(180, 255)
-    $script:chkAutoRestart.Size = New-Object System.Drawing.Size(300, 25)
+    $script:chkAutoRestart.Text = "Auto-Restart (every 6 hours)"
+    $script:chkAutoRestart.Location = New-Object System.Drawing.Point(600, 10)
+    $script:chkAutoRestart.Size = New-Object System.Drawing.Size(250, 25)
     $script:chkAutoRestart.ForeColor = $colorText
     $script:chkAutoRestart.BackColor = $colorPanelBg
 
-    # 2. Load saved state
     if ($script:autoRestartEnabled) {
         $script:chkAutoRestart.Checked = $true
     }
 
-    # 3. Add event handler
     $script:chkAutoRestart.Add_CheckedChanged({
-
         param($sender, $eventArgs)
-
-        Write-Host "CHECKBOX FIRED: $($sender.Checked)" -ForegroundColor Cyan
 
         $script:autoRestartEnabled = $sender.Checked
         Save-UISettings
 
         if ($script:autoRestartEnabled) {
-
             if ($script:serverRunning) {
-                # Server is running → start fresh 6h countdown
                 $script:nextRestartTime = (Get-Date).AddHours(6)
-            }
-            else {
-                # Server is stopped → do NOT start countdown yet
+            } else {
                 $script:nextRestartTime = $null
                 $script:nextRestartLabel.Text = "Next Restart: --"
             }
-
-        }
-        else {
-            # Auto-restart disabled
+        } else {
             $script:nextRestartTime = $null
             if ($script:nextRestartLabel) {
                 $script:nextRestartLabel.Text = "Next Restart: --"
@@ -536,46 +749,45 @@ function Build-ServerTab {
         }
     })
 
-    # 4. Add to UI
     $tab.Controls.Add($script:chkAutoRestart)
     $toolTip.SetToolTip($script:chkAutoRestart, "Automatically restart the server every 6 hours")
 
-
-
-    # Current Arguments Display
-    $lblCurrentArgs = New-Object System.Windows.Forms.Label
-    $lblCurrentArgs.Text = "Current Arguments:"
-    $lblCurrentArgs.Location = New-Object System.Drawing.Point(10, 290)
-    $lblCurrentArgs.Size = New-Object System.Drawing.Size(200, 20)
-    $lblCurrentArgs.ForeColor = $colorText
-    $lblCurrentArgs.Font = New-Object System.Drawing.Font("Arial", 9, [System.Drawing.FontStyle]::Bold)
-    $tab.Controls.Add($lblCurrentArgs)
-
-    $txtCurrentArgs = New-Object System.Windows.Forms.TextBox
-    $txtCurrentArgs.Location = New-Object System.Drawing.Point(10, 315)
-    $txtCurrentArgs.Size = New-Object System.Drawing.Size(1070, 50)
-    $txtCurrentArgs.Multiline = $true
-    $txtCurrentArgs.ReadOnly = $true
-    $txtCurrentArgs.BackColor = $colorTextboxBg
-    $txtCurrentArgs.ForeColor = $colorTextboxText
-    $txtCurrentArgs.Text = $script:startupArguments
-    $tab.Controls.Add($txtCurrentArgs)
-    $script:currentArgsDisplay = $txtCurrentArgs
-
-    # Console Output
+    # ============================================================
+    # CONSOLE HEADER + CLEAR BUTTON
+    # ============================================================
     $lblLogsTitle = New-Object System.Windows.Forms.Label
     $lblLogsTitle.Text = "Server Console Output:"
-    $lblLogsTitle.Location = New-Object System.Drawing.Point(10, 375)
+    $lblLogsTitle.Location = New-Object System.Drawing.Point(10, 250)
     $lblLogsTitle.Size = New-Object System.Drawing.Size(200, 20)
     $lblLogsTitle.ForeColor = $colorText
     $lblLogsTitle.Font = New-Object System.Drawing.Font("Arial", 9, [System.Drawing.FontStyle]::Bold)
     $tab.Controls.Add($lblLogsTitle)
 
+    # Clear Logs button (now next to header)
+    $btnClearLogs = New-Object System.Windows.Forms.Button
+    $btnClearLogs.Text = "Clear"
+    $btnClearLogs.Location = New-Object System.Drawing.Point(220, 247)
+    $btnClearLogs.Size = New-Object System.Drawing.Size(60, 25)
+    $btnClearLogs.BackColor = $colorButtonBg
+    $btnClearLogs.ForeColor = $colorButtonText
+    $btnClearLogs.FlatStyle = "Flat"
+    $btnClearLogs.Font = New-Object System.Drawing.Font("Arial", 8, [System.Drawing.FontStyle]::Bold)
+    $btnClearLogs.Add_Click({
+        if ($script:logsTextBox) {
+            $script:logsTextBox.Clear()
+        }
+    })
+    $tab.Controls.Add($btnClearLogs)
+    $toolTip.SetToolTip($btnClearLogs, "Clear log display")
+
+    # ============================================================
+    # CONSOLE WINDOW (expanded)
+    # ============================================================
     $txtLogs = New-Object System.Windows.Forms.TextBox
     $txtLogs.Multiline = $true
     $txtLogs.ScrollBars = "Vertical"
-    $txtLogs.Location = New-Object System.Drawing.Point(10, 400)
-    $txtLogs.Size = New-Object System.Drawing.Size(1070, 60)
+    $txtLogs.Location = New-Object System.Drawing.Point(10, 275)
+    $txtLogs.Size = New-Object System.Drawing.Size(1070, 260)
     $txtLogs.ReadOnly = $true
     $txtLogs.BackColor = $colorTextboxBg
     $txtLogs.ForeColor = $colorTextboxText
@@ -584,19 +796,9 @@ function Build-ServerTab {
     $toolTip.SetToolTip($txtLogs, "Live server console output")
     Set-LogOutputBox $txtLogs
 
-
-    # Clear Logs Button
-    $btnClearLogs = New-Object System.Windows.Forms.Button
-    $btnClearLogs.Text = "[CLEAR LOGS]"
-    $btnClearLogs.Location = New-Object System.Drawing.Point(10, 470)
-    $btnClearLogs.Size = New-Object System.Drawing.Size(100, 30)
-    $btnClearLogs.BackColor = $colorButtonBg
-    $btnClearLogs.ForeColor = $colorButtonText
-    $btnClearLogs.FlatStyle = "Flat"
-    $btnClearLogs.Add_Click({ $txtLogs.Clear() })
-    $tab.Controls.Add($btnClearLogs)
-    $toolTip.SetToolTip($btnClearLogs, "Clear log display")
+    $script:logsTextBox = $txtLogs
 }
+
 
 # ===== CONFIG TAB =====
 function Build-ConfigTab {
@@ -633,16 +835,17 @@ function Build-ConfigTab {
     $gridConfig.ReadOnly = $false
     $gridConfig.AllowUserToAddRows = $false
     $gridConfig.AllowUserToDeleteRows = $false
+
+    # DARK MODE
     $gridConfig.BackgroundColor = $colorTextboxBg
     $gridConfig.ForeColor = $colorTextboxText
     $gridConfig.GridColor = [System.Drawing.Color]::FromArgb(80,80,80)
     $gridConfig.ColumnHeadersDefaultCellStyle.BackColor = $colorPanelBg
     $gridConfig.ColumnHeadersDefaultCellStyle.ForeColor = $colorText
-    $gridConfig.ColumnHeadersDefaultCellStyle.Font = New-Object System.Drawing.Font("Arial", 9, [System.Drawing.FontStyle]::Bold)
     $gridConfig.DefaultCellStyle.BackColor = $colorTextboxBg
     $gridConfig.DefaultCellStyle.ForeColor = $colorTextboxText
-    $gridConfig.DefaultCellStyle.SelectionBackColor = $colorButtonBg
-    $gridConfig.DefaultCellStyle.SelectionForeColor = $colorButtonText
+    $gridConfig.DefaultCellStyle.SelectionBackColor = [System.Drawing.Color]::FromArgb(60,60,60)
+    $gridConfig.DefaultCellStyle.SelectionForeColor = $colorText
 
     # Columns
     $gridConfig.ColumnCount = 3
@@ -669,12 +872,22 @@ function Build-ConfigTab {
     $script:configGrid = $gridConfig
     $script:configSearchBox = $txtSearch
 
-    # Search filter
+    # === CRASH-PROOF SEARCH HANDLER ===
     $txtSearch.Add_TextChanged({
+        if (-not $script:configGrid) { return }
+
         $search = $txtSearch.Text.ToLower()
-        foreach ($row in $gridConfig.Rows) {
-            $key = $row.Cells[0].Value
-            $row.Visible = ($key -and $key.ToLower().Contains($search))
+
+        foreach ($row in $script:configGrid.Rows) {
+            $key   = $row.Cells[0].Value
+            $value = $row.Cells[2].Value
+
+            $match = $false
+
+            if ($key   -and $key.ToLower().Contains($search))   { $match = $true }
+            if ($value -and $value.ToLower().Contains($search)) { $match = $true }
+
+            $row.Visible = $match
         }
     })
 
@@ -913,6 +1126,7 @@ function Refresh-BackupList {
     }
 }
 
+
 # ===== PLAYERS TAB =====
 function Build-PlayersTab {
     param($tab, $toolTip)
@@ -935,13 +1149,22 @@ function Build-PlayersTab {
     $grid.AllowUserToDeleteRows = $false
     $grid.SelectionMode = "FullRowSelect"
     $grid.MultiSelect = $false
+
+    # DARK MODE BASE COLORS
     $grid.BackgroundColor = $colorTextboxBg
     $grid.ForeColor = $colorTextboxText
     $grid.GridColor = [System.Drawing.Color]::FromArgb(80,80,80)
+
     $grid.ColumnHeadersDefaultCellStyle.BackColor = $colorPanelBg
     $grid.ColumnHeadersDefaultCellStyle.ForeColor = $colorText
     $grid.ColumnHeadersDefaultCellStyle.Font = New-Object System.Drawing.Font("Arial", 9, [System.Drawing.FontStyle]::Bold)
 
+    $grid.DefaultCellStyle.BackColor = $colorTextboxBg
+    $grid.DefaultCellStyle.ForeColor = $colorTextboxText
+    $grid.DefaultCellStyle.SelectionBackColor = [System.Drawing.Color]::FromArgb(60,60,60)
+    $grid.DefaultCellStyle.SelectionForeColor = $colorText
+
+    # Columns
     $grid.Columns.Add("Name","Player Name")
     $grid.Columns.Add("PlayerUID","Player UID")
     $grid.Columns.Add("Level","Level") 
@@ -1050,20 +1273,27 @@ function Build-PlayersTab {
     Refresh-PlayerList
 }
 
+
 # Helper: Refresh player list
 function Refresh-PlayerList {
-    try {
-        $script:playerGrid.Rows.Clear()
-        if (-not $script:serverRunning) { return }
-        $players = Get-PlayersREST
-        foreach ($p in $players) {
-            $script:playerGrid.Rows.Add($p.Name, $p.PlayerUID, $p.Level, $p.Experience, $p.CharacterUID)
-        }
-    } catch {
-        # If RCON fails, clear grid safely
-        $script:playerGrid.Rows.Clear()
+    if (-not $script:playerGrid) { return }
+
+    $script:playerGrid.Rows.Clear()
+
+    $players = Get-PlayersREST
+    foreach ($p in $players) {
+        $script:playerGrid.Rows.Add($p.Name, $p.PlayerUID, $p.Level)
+    }
+
+    # === FORCE DARK MODE ON REFRESH ===
+    foreach ($row in $script:playerGrid.Rows) {
+        $row.DefaultCellStyle.BackColor = $colorTextboxBg
+        $row.DefaultCellStyle.ForeColor = $colorTextboxText
+        $row.DefaultCellStyle.SelectionBackColor = [System.Drawing.Color]::FromArgb(60,60,60)
+        $row.DefaultCellStyle.SelectionForeColor = $colorText
     }
 }
+
 
 # ===== MONITORING TAB =====
 function Build-MonitoringTab {
@@ -1466,18 +1696,18 @@ function Build-RCONTab {
         $txtCommand.Text = ""
     }
 
-    # Bind buttons
-    $btnSend.Add_Click($getHandler)
-    $btnPost.Add_Click($postHandler)
+# Bind buttons
+$btnSend.Add_Click($getHandler)
+$btnPost.Add_Click($postHandler)
 
-    # Bind Enter key to GET
-    $txtCommand.Add_KeyDown({
-        param($sender, $e)
-        if ($e.KeyCode -eq "Enter") {
-            $e.SuppressKeyPress = $true
-            & $getHandler
-        }
-    })
+# Bind Enter key to GET
+$txtCommand.Add_KeyDown({
+    param($sender, $e)
+    if ($e.KeyCode -eq "Enter") {
+        $e.SuppressKeyPress = $true
+        & $getHandler
+    }
+})
 
     # Info label
     $lblInfo = New-Object System.Windows.Forms.Label
@@ -1488,6 +1718,193 @@ function Build-RCONTab {
     $lblInfo.Font = New-Object System.Drawing.Font("Arial", 8)
     $lblInfo.AutoSize = $false
     $tab.Controls.Add($lblInfo)
+}
+
+
+# =====================================================================
+# BUILD: SteamCMD Tab (UI Module)
+# =====================================================================
+function Build-SteamCMDTab {
+    param(
+        $tab,
+        $toolTip
+    )
+
+    # Main layout container
+    $mainPanel = New-Object System.Windows.Forms.TableLayoutPanel
+    $mainPanel.Dock = "Fill"
+    $mainPanel.ColumnCount = 1
+    $mainPanel.RowCount = 3
+    $mainPanel.BackColor = $colorPanelBg
+    $mainPanel.Padding = '10,10,10,10'
+    $mainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+    $mainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+    $mainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+    $tab.Controls.Add($mainPanel)
+
+    # ============================================================
+    # HEADER + STATUS
+    # ============================================================
+    $headerPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $headerPanel.FlowDirection = "TopDown"
+    $headerPanel.WrapContents = $false
+    $headerPanel.AutoSize = $true
+    $headerPanel.BackColor = $colorPanelBg
+    $mainPanel.Controls.Add($headerPanel)
+
+    $lblTitle = New-Object System.Windows.Forms.Label
+    $lblTitle.Text = "SteamCMD - Server Installer & Updates"
+    $lblTitle.AutoSize = $true
+    $lblTitle.ForeColor = $colorText
+    $lblTitle.Font = New-Object System.Drawing.Font("Arial", 12, [System.Drawing.FontStyle]::Bold)
+    $headerPanel.Controls.Add($lblTitle)
+
+    $lblDesc = New-Object System.Windows.Forms.Label
+    $lblDesc.Text = "Download, validate, and update the Palworld Dedicated Server using SteamCMD."
+    $lblDesc.AutoSize = $true
+    $lblDesc.ForeColor = $colorTextDim
+    $lblDesc.Font = New-Object System.Drawing.Font("Arial", 9)
+    $headerPanel.Controls.Add($lblDesc)
+
+    # Status labels
+    $statusPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $statusPanel.FlowDirection = "TopDown"
+    $statusPanel.WrapContents = $false
+    $statusPanel.AutoSize = $true
+    $statusPanel.BackColor = $colorPanelBg
+    $statusPanel.Margin = '0,10,0,10'
+    $headerPanel.Controls.Add($statusPanel)
+
+    $script:lblSteamCMD_ServerStatus = New-Object System.Windows.Forms.Label
+    $script:lblSteamCMD_ServerStatus.Text = "PalServer.exe: [Not checked]"
+    $script:lblSteamCMD_ServerStatus.AutoSize = $true
+    $script:lblSteamCMD_ServerStatus.ForeColor = $colorTextDim
+    $statusPanel.Controls.Add($script:lblSteamCMD_ServerStatus)
+
+    $script:lblSteamCMD_IniStatus = New-Object System.Windows.Forms.Label
+    $script:lblSteamCMD_IniStatus.Text = "PalWorldSettings.ini: [Not checked]"
+    $script:lblSteamCMD_IniStatus.AutoSize = $true
+    $script:lblSteamCMD_IniStatus.ForeColor = $colorTextDim
+    $statusPanel.Controls.Add($script:lblSteamCMD_IniStatus)
+
+    $script:lblSteamCMD_UpdateStatus = New-Object System.Windows.Forms.Label
+    $script:lblSteamCMD_UpdateStatus.Text = "Update Status: Unknown"
+    $script:lblSteamCMD_UpdateStatus.AutoSize = $true
+    $script:lblSteamCMD_UpdateStatus.ForeColor = $colorTextDim
+    $statusPanel.Controls.Add($script:lblSteamCMD_UpdateStatus)
+
+
+    # ============================================================
+    # BUTTONS + OPTIONS
+    # ============================================================
+    $buttonPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $buttonPanel.FlowDirection = "LeftToRight"
+    $buttonPanel.WrapContents = $true
+    $buttonPanel.AutoSize = $true
+    $buttonPanel.BackColor = $colorPanelBg
+    $buttonPanel.Margin = '0,10,0,10'
+    $mainPanel.Controls.Add($buttonPanel)
+
+    # --- DOWNLOAD SERVER FILES ---
+    $btnDownload = New-Object System.Windows.Forms.Button
+    $btnDownload.Text = "[ DOWNLOAD SERVER FILES ]"
+    $btnDownload.Size = New-Object System.Drawing.Size(220, 35)
+    $btnDownload.BackColor = $colorButtonBg
+    $btnDownload.ForeColor = $colorButtonText
+    $btnDownload.FlatStyle = "Flat"
+    $btnDownload.Font = New-Object System.Drawing.Font("Arial", 9, [System.Drawing.FontStyle]::Bold)
+    $btnDownload.Add_Click({
+        Write-SteamCMDLog "=== DOWNLOAD SERVER FILES CLICKED ==="
+        Install-PalworldServer
+    })
+    $buttonPanel.Controls.Add($btnDownload)
+
+    # --- CHECK REQUIRED FILES ---
+    $btnCheckFiles = New-Object System.Windows.Forms.Button
+    $btnCheckFiles.Text = "[ CHECK REQUIRED FILES ]"
+    $btnCheckFiles.Size = New-Object System.Drawing.Size(220, 35)
+    $btnCheckFiles.BackColor = $colorButtonBg
+    $btnCheckFiles.ForeColor = $colorButtonText
+    $btnCheckFiles.FlatStyle = "Flat"
+    $btnCheckFiles.Font = New-Object System.Drawing.Font("Arial", 9, [System.Drawing.FontStyle]::Bold)
+    $btnCheckFiles.Add_Click({
+        Write-SteamCMDLog "=== CHECK REQUIRED FILES CLICKED ==="
+        Check-RequiredServerFiles | Out-Null
+    })
+    $buttonPanel.Controls.Add($btnCheckFiles)
+
+    # --- CHECK FOR UPDATES ---
+    $btnCheckUpdates = New-Object System.Windows.Forms.Button
+    $btnCheckUpdates.Text = "[ CHECK FOR UPDATES ]"
+    $btnCheckUpdates.Size = New-Object System.Drawing.Size(220, 35)
+    $btnCheckUpdates.BackColor = $colorButtonBg
+    $btnCheckUpdates.ForeColor = $colorButtonText
+    $btnCheckUpdates.FlatStyle = "Flat"
+    $btnCheckUpdates.Font = New-Object System.Drawing.Font("Arial", 9, [System.Drawing.FontStyle]::Bold)
+    $btnCheckUpdates.Add_Click({
+        Write-SteamCMDLog "=== CHECK FOR UPDATES CLICKED ==="
+        Check-ForPalworldUpdates
+        Update-PalworldUpdateStatus
+    })
+    $buttonPanel.Controls.Add($btnCheckUpdates)
+
+    # --- UPDATE SERVER ---
+    $btnUpdate = New-Object System.Windows.Forms.Button
+    $btnUpdate.Text = "[ UPDATE SERVER ]"
+    $btnUpdate.Size = New-Object System.Drawing.Size(220, 35)
+    $btnUpdate.BackColor = $colorButtonBg
+    $btnUpdate.ForeColor = $colorButtonText
+    $btnUpdate.FlatStyle = "Flat"
+    $btnUpdate.Font = New-Object System.Drawing.Font("Arial", 9, [System.Drawing.FontStyle]::Bold)
+    $btnUpdate.Add_Click({
+        Write-SteamCMDLog "=== UPDATE SERVER CLICKED ==="
+        Update-PalworldServer
+    })
+    $buttonPanel.Controls.Add($btnUpdate)
+
+    # --- DOWNLOAD STEAMCMD ONLY ---
+    $btnDownloadSteamCMD = New-Object System.Windows.Forms.Button
+    $btnDownloadSteamCMD.Text = "[ DOWNLOAD STEAMCMD ]"
+    $btnDownloadSteamCMD.Size = New-Object System.Drawing.Size(220, 35)
+    $btnDownloadSteamCMD.BackColor = $colorButtonBg
+    $btnDownloadSteamCMD.ForeColor = $colorButtonText
+    $btnDownloadSteamCMD.FlatStyle = "Flat"
+    $btnDownloadSteamCMD.Font = New-Object System.Drawing.Font("Arial", 9, [System.Drawing.FontStyle]::Bold)
+    $btnDownloadSteamCMD.Add_Click({
+        Write-SteamCMDLog "=== DOWNLOAD STEAMCMD CLICKED ==="
+        Install-SteamCMD
+    })
+    $buttonPanel.Controls.Add($btnDownloadSteamCMD)
+
+
+    # --- AUTO-RESTART CHECKBOX ---
+    $script:chkSteamCMD_AutoRestart = New-Object System.Windows.Forms.CheckBox
+    $script:chkSteamCMD_AutoRestart.Text = "Auto-restart server after update"
+    $script:chkSteamCMD_AutoRestart.AutoSize = $true
+    $script:chkSteamCMD_AutoRestart.ForeColor = $colorText
+    $script:chkSteamCMD_AutoRestart.Margin = '15,10,0,0'
+    $buttonPanel.Controls.Add($script:chkSteamCMD_AutoRestart)
+
+    # ============================================================
+    # OUTPUT CONSOLE
+    # ============================================================
+    $outputPanel = New-Object System.Windows.Forms.Panel
+    $outputPanel.Dock = "Fill"
+    $outputPanel.BackColor = $colorPanelBg
+    $mainPanel.Controls.Add($outputPanel)
+
+    $script:steamcmdOutputBox = New-Object System.Windows.Forms.TextBox
+    $script:steamcmdOutputBox.Multiline = $true
+    $script:steamcmdOutputBox.ScrollBars = "Vertical"
+    $script:steamcmdOutputBox.ReadOnly = $true
+    $script:steamcmdOutputBox.Dock = "Fill"
+    $script:steamcmdOutputBox.BackColor = [System.Drawing.Color]::FromArgb(20,20,20)
+    $script:steamcmdOutputBox.ForeColor = $colorText
+    $script:steamcmdOutputBox.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $outputPanel.Controls.Add($script:steamcmdOutputBox)
+
+    Write-SteamCMDLog "SteamCMD tab initialized. Ready when you are."
+    Update-PalworldUpdateStatus
 }
 
 # ==========================================================================================

@@ -5,28 +5,28 @@
 # -------------------------
 # GLOBAL VARIABLES
 # -------------------------
-$script:serverProcess       = $null
-$script:serverRunning       = $false
-$script:serverStarting      = $false
-$script:serverStartTime     = $null
-$script:lastCrashTime       = $null
+$script:serverProcess        = $null
+$script:serverRunning        = $false
+$script:serverStarting       = $false
+$script:serverStartTime      = $null
+$script:lastCrashTime        = $null
 
-$script:uptimeLabel         = $null
-$script:uptimeTimer         = $null
-$script:crashDetectionTimer = $null
+$script:uptimeLabel          = $null
+$script:uptimeTimer          = $null
+$script:crashDetectionTimer  = $null
 
-$script:startupArguments    = ""
-$script:selectedArguments   = @{}
+$script:startupArguments     = ""
+$script:selectedArguments    = @{}
 
-$script:serverLogsBox       = $null
-$script:outputReaderTimer   = $null
-$script:lastLogPosition     = 0
-$script:logFileFound        = $false
+$script:serverLogsBox        = $null
+$script:outputReaderTimer    = $null
+$script:lastLogPosition      = 0
+$script:logFileFound         = $false
 
-$script:onServerCrash       = $null
-$script:onServerStarted     = $null
+$script:onServerCrash        = $null
+$script:onServerStarted      = $null
 
-$script:apiVerificationTimer = $null  # Timer to verify API after server starts
+$script:apiVerificationTimer = $null   # API readiness / verification timer
 
 # Determine server root
 if ($PSScriptRoot -like "*\modules") {
@@ -61,25 +61,44 @@ function Set-LogOutputBox {
 # ==========================================================================================
 # Append-ServerConsole
 # ==========================================================================================
+# Maximum number of lines to keep in the console
+$script:MaxLogLines = 1500
+
 function Append-ServerConsole {
     param([string]$text)
 
     if (-not $script:serverLogsBox) { return }
 
+    # Build timestamped line
+    $timestamp = (Get-Date).ToString("HH:mm:ss")
+    $line = "[$timestamp] $text"
+
+    # Internal helper to keep code DRY
+    $appendAction = {
+        $box = $script:serverLogsBox
+
+        # Append new line
+        $box.AppendText("$line`r`n")
+
+        # Trim old lines if needed
+        $lines = $box.Lines
+        if ($lines.Count -gt $script:MaxLogLines) {
+            $box.Lines = $lines[-$script:MaxLogLines..-1]
+        }
+
+        # Auto-scroll
+        $box.SelectionStart = $box.TextLength
+        $box.ScrollToCaret()
+    }
+
+    # Thread-safe invoke
     if ($script:serverLogsBox.InvokeRequired) {
-        $script:serverLogsBox.Invoke([Action]{
-            $script:serverLogsBox.AppendText("$text`r`n")
-            $script:serverLogsBox.SelectionStart = $script:serverLogsBox.Text.Length
-            $script:serverLogsBox.ScrollToCaret()
-        })
+        $script:serverLogsBox.Invoke([Action]$appendAction)
     }
     else {
-        $script:serverLogsBox.AppendText("$text`r`n")
-        $script:serverLogsBox.SelectionStart = $script:serverLogsBox.Text.Length
-        $script:serverLogsBox.ScrollToCaret()
+        & $appendAction
     }
 }
-
 
 
 # ==========================================================================================
@@ -102,6 +121,18 @@ function Build-StartupArguments {
 
     $script:startupArguments = $args -join " "
     return $script:startupArguments
+}
+
+# ==========================================================================================
+# FUNCTION: Test-RESTAPIReady
+# ==========================================================================================
+function Test-RESTAPIReady {
+    try {
+        Invoke-RestMethod "http://localhost:8212/api/v1/server" -TimeoutSec 1 | Out-Null
+        return $true
+    } catch {
+        return $false
+    }
 }
 
 # ==========================================================================================
@@ -159,9 +190,6 @@ function Start-Server {
             $script:crashDetectionTimer.Add_Tick({ Detect-ServerCrash })
         }
         $script:crashDetectionTimer.Start()
-
-        # --- LOG OUTPUT ROUTING ----------------------------------------------------
-        Set-LogOutputBox $serverConsoleTextBox
 
         # --- API VERIFICATION TIMER ------------------------------------------------
         if (-not $script:apiVerificationTimer) {
@@ -224,10 +252,6 @@ function Start-Server {
     }
 }
 
-
-
-
-
 # ==========================================================================================
 # Stop-Server (Graceful Shutdown via API)
 # ==========================================================================================
@@ -285,8 +309,7 @@ function Stop-Server {
         if ($script:crashDetectionTimer)   { $script:crashDetectionTimer.Stop() }
         if ($script:apiVerificationTimer)  { $script:apiVerificationTimer.Stop() }
         if ($script:monitoringTimer)       { $script:monitoringTimer.Stop() }
-
-        if ($script:autoRestartTimer)      { $script:autoRestartTimer.Stop() }   # ← NEW LINE
+        if ($script:autoRestartTimer)      { $script:autoRestartTimer.Stop() }
 
         Reset-MonitoringUI      
 
@@ -298,9 +321,6 @@ function Stop-Server {
         return $false
     }
 }
-
-
-
 
 # ==========================================================================================
 # Force-Kill-Server (Immediate shutdown via API, no warning)
@@ -351,13 +371,13 @@ function Force-Kill-Server {
 
         try { $script:serverProcess.Dispose() } catch {}
 
-        $script:serverProcess = $null
-        $script:serverRunning = $false
-        $script:serverStarting = $false
-        $script:serverStartTime = $null
+        $script:serverProcess    = $null
+        $script:serverRunning    = $false
+        $script:serverStarting   = $false
+        $script:serverStartTime  = $null
 
-        if ($script:crashDetectionTimer) { $script:crashDetectionTimer.Stop() }
-        if ($script:apiVerificationTimer) { $script:apiVerificationTimer.Stop() }
+        if ($script:crashDetectionTimer)   { $script:crashDetectionTimer.Stop() }
+        if ($script:apiVerificationTimer)  { $script:apiVerificationTimer.Stop() }
 
         Write-Host "=== FORCE KILL COMPLETE ===" -ForegroundColor Red
         return $true
@@ -376,10 +396,9 @@ function Detect-ServerCrash {
     if ($script:serverProcess -and $script:serverProcess.HasExited) {
 
         if ($script:serverRunning -or $script:serverStarting) {
-            $script:serverRunning = $false
+            $script:serverRunning  = $false
             $script:serverStarting = $false
-            $script:lastCrashTime = Get-Date
-
+            $script:lastCrashTime  = Get-Date
 
             if ($script:onServerCrash) { & $script:onServerCrash }
         }
@@ -406,140 +425,13 @@ function Update-Uptime {
 # ==========================================================================================
 function Get-ServerStatus {
     return @{
-        Running      = $script:serverRunning
-        Starting     = $script:serverStarting
-        Process      = $script:serverProcess
-        StartTime    = $script:serverStartTime
-        LastCrashTime= $script:lastCrashTime
+        Running       = $script:serverRunning
+        Starting      = $script:serverStarting
+        Process       = $script:serverProcess
+        StartTime     = $script:serverStartTime
+        LastCrashTime = $script:lastCrashTime
     }
 }
-
-#=========================================================================================
-# Redirect-PowerShellOutput
-#=========================================================================================
-function Redirect-PowerShellOutput {
-
-    # Remove any existing overrides so ours take effect
-    Remove-Item function:Write-Host -ErrorAction SilentlyContinue
-    Remove-Item function:Write-Warning -ErrorAction SilentlyContinue
-    Remove-Item function:Write-Error -ErrorAction SilentlyContinue
-    Remove-Item function:Write-Verbose -ErrorAction SilentlyContinue
-    Remove-Item function:Write-Debug -ErrorAction SilentlyContinue
-    Remove-Item function:Write-Information -ErrorAction SilentlyContinue
-    Remove-Item function:Out-Default -ErrorAction SilentlyContinue
-
-    # Override Write-* functions (join all args)
-    Set-Item function:Write-Host -Value {
-        param([Parameter(ValueFromRemainingArguments = $true)] $Message)
-        $text = ($Message -join ' ')
-        Append-ServerConsole "[HOST] $text"
-    }
-
-    Set-Item function:Write-Warning -Value {
-        param([Parameter(ValueFromRemainingArguments = $true)] $Message)
-        $text = ($Message -join ' ')
-        Append-ServerConsole "[WARN] $text"
-    }
-
-    Set-Item function:Write-Error -Value {
-        param([Parameter(ValueFromRemainingArguments = $true)] $Message)
-        $text = ($Message -join ' ')
-        Append-ServerConsole "[ERROR] $text"
-    }
-
-    Set-Item function:Write-Verbose -Value {
-        param([Parameter(ValueFromRemainingArguments = $true)] $Message)
-        $text = ($Message -join ' ')
-        Append-ServerConsole "[VERBOSE] $text"
-    }
-
-    Set-Item function:Write-Debug -Value {
-        param([Parameter(ValueFromRemainingArguments = $true)] $Message)
-        $text = ($Message -join ' ')
-        Append-ServerConsole "[DEBUG] $text"
-    }
-
-    Set-Item function:Write-Information -Value {
-        param([Parameter(ValueFromRemainingArguments = $true)] $Message)
-        $text = ($Message -join ' ')
-        Append-ServerConsole "[INFO] $text"
-    }
-
-    # ⭐ GLOBAL OUTPUT INTERCEPTOR (captures EVERYTHING from ALL runspaces)
-    Set-Item function:Out-Default -Value {
-        param([Parameter(ValueFromRemainingArguments = $true)] $InputObject)
-        foreach ($line in $InputObject) {
-            Append-ServerConsole "[OUT] $line"
-        }
-    }
-
-    # Hook native PowerShell streams
-    $global:WarningPreference        = 'Continue'
-    $global:VerbosePreference        = 'Continue'
-    $global:DebugPreference          = 'Continue'
-    $global:InformationPreference    = 'Continue'
-    $global:ErrorActionPreference    = 'Continue'
-
-    # Capture ALL errors (native stream 2)
-    Register-EngineEvent PowerShell.OnError -Action {
-        $items = $Event.SourceArgs
-        if (-not $items -or $items.Count -eq 0) {
-            if ($global:Error.Count -gt 0) {
-                $msg = $global:Error[0].Exception.Message
-                Append-ServerConsole "[ERROR] $msg"
-            } else {
-                Append-ServerConsole "[ERROR] (no message)"
-            }
-            return
-        }
-
-        foreach ($item in $items) {
-            if ($item -is [System.Management.Automation.ErrorRecord]) {
-                Append-ServerConsole "[ERROR] $($item.Exception.Message)"
-            } elseif ($item) {
-                Append-ServerConsole "[ERROR] $item"
-            } else {
-                Append-ServerConsole "[ERROR] (no message)"
-            }
-        }
-    }
-
-    # Capture ALL warnings (native stream 3)
-    Register-EngineEvent PowerShell.OnWarning -Action {
-        $items = $Event.SourceArgs
-        if (-not $items -or $items.Count -eq 0) {
-            Append-ServerConsole "[WARN] (no message)"
-            return
-        }
-
-        foreach ($item in $items) {
-            Append-ServerConsole "[WARN] $item"
-        }
-    }
-
-    # Capture ALL information messages
-    Register-EngineEvent PowerShell.OnInformation -Action {
-        $items = $Event.SourceArgs
-        if (-not $items -or $items.Count -eq 0) {
-            Append-ServerConsole "[INFO] (no message)"
-            return
-        }
-
-        foreach ($item in $items) {
-            Append-ServerConsole "[INFO] $item"
-        }
-    }
-
-    # Capture CommandNotFound exceptions
-    $ExecutionContext.InvokeCommand.CommandNotFoundAction = {
-        param($commandName, $exception)
-        Append-ServerConsole "[ERROR] $($exception.Message)"
-    }
-}
-
-
-
-
 
 
 
@@ -548,23 +440,74 @@ function Redirect-PowerShellOutput {
 # ==========================================================================================
 function Cleanup-Core {
 
+    Write-Host "[DEBUG] Cleanup-Core starting..." -ForegroundColor Yellow
+
+    # ------------------------------------------------------------
+    # 1. Stop console update timer FIRST (CRITICAL)
+    # ------------------------------------------------------------
+    if ($script:ConsoleUpdateTimer) {
+        Write-Host "[DEBUG] Stopping ConsoleUpdateTimer" -ForegroundColor Yellow
+        $script:ConsoleUpdateTimer.Stop()
+        $script:ConsoleUpdateTimer.Dispose()
+        $script:ConsoleUpdateTimer = $null
+    }
+
+    # ------------------------------------------------------------
+    # 2. Stop transcript BEFORE clearing logs or stopping server
+    # ------------------------------------------------------------
+    try {
+        Write-Host "[DEBUG] Stopping transcript" -ForegroundColor Yellow
+        Stop-ConsoleRedirect
+    } catch {
+        Write-Host "[CORE] Stop-ConsoleRedirect failed: $($_.Exception.Message)" -ForegroundColor DarkYellow
+    }
+
+    # ------------------------------------------------------------
+    # 3. Unregister ALL engine events (CRITICAL)
+    # ------------------------------------------------------------
+    try {
+        Write-Host "[DEBUG] Unregistering event subscribers" -ForegroundColor Yellow
+        Get-EventSubscriber | Unregister-Event -Force
+    } catch {
+        Write-Host "[CORE] Failed to unregister events: $($_.Exception.Message)" -ForegroundColor DarkYellow
+    }
+
+    # ------------------------------------------------------------
+    # 4. Stop uptime timer
+    # ------------------------------------------------------------
     if ($script:uptimeTimer) {
+        Write-Host "[DEBUG] Stopping uptimeTimer" -ForegroundColor Yellow
         $script:uptimeTimer.Stop()
         $script:uptimeTimer.Dispose()
     }
 
+    # ------------------------------------------------------------
+    # 5. Stop crash detection timer
+    # ------------------------------------------------------------
     if ($script:crashDetectionTimer) {
+        Write-Host "[DEBUG] Stopping crashDetectionTimer" -ForegroundColor Yellow
         $script:crashDetectionTimer.Stop()
         $script:crashDetectionTimer.Dispose()
     }
 
+    # ------------------------------------------------------------
+    # 6. Stop API verification timer
+    # ------------------------------------------------------------
     if ($script:apiVerificationTimer) {
+        Write-Host "[DEBUG] Stopping apiVerificationTimer" -ForegroundColor Yellow
         $script:apiVerificationTimer.Stop()
         $script:apiVerificationTimer.Dispose()
     }
 
-
+    # ------------------------------------------------------------
+    # 7. Stop server LAST (now safe)
+    # ------------------------------------------------------------
     if ($script:serverRunning -or $script:serverStarting) {
+        Write-Host "[DEBUG] Stopping server" -ForegroundColor Yellow
         Stop-Server | Out-Null
     }
+
+    Write-Host "[DEBUG] Cleanup-Core complete." -ForegroundColor Green
 }
+
+
